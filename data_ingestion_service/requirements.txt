@@ -1,0 +1,9 @@
+Flask==2.0.1
+Werkzeug==2.0.3
+pandas==1.3.5
+numpy==1.21.6
+requests==2.26.0
+# alpha_vantage removed as it requires a premium subscription for our needs
+# yfinance removed as we are switching to Alpha Vantage
+psycopg2-binary==2.9.3
+SQLAlchemy==1.4.29 

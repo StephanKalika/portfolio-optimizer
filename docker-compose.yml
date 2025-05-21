@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:13-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_USER=stockuser
+      - POSTGRES_PASSWORD=stockpassword
+      - POSTGRES_DB=stockdata
+    ports:
+      - "5432:5432" # Expose PostgreSQL port to host for easier inspection if needed
+    networks:
+      - portfolio_network
+
+  data_ingestion_service:
+    build: ./data_ingestion_service
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./data_ingestion_service:/app
+    environment:
+      - DATABASE_URL=postgresql://stockuser:stockpassword@db:5432/stockdata
+      - FMP_API_KEY=dqWvi9d10HNxfG275sdqprlejmbujHFR
+      - FLASK_APP=app.py
+      - FLASK_RUN_HOST=0.0.0.0
+      - FLASK_RUN_PORT=5001
+    depends_on:
+      - db
+    networks:
+      - portfolio_network
+
+  model_training_service:
+    build: ./model_training_service
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./model_training_service:/app
+      - trained_models_data:/app/trained_models # Persist trained models
+    environment:
+      - DATABASE_URL=postgresql://stockuser:stockpassword@db:5432/stockdata
+      - FLASK_APP=app.py
+      - FLASK_RUN_HOST=0.0.0.0
+      - FLASK_DEBUG=0 # Disable Flask debug mode and reloader for stability
+    depends_on:
+      - db
+    networks:
+      - portfolio_network
+
+  portfolio_optimization_service:
+    build: ./portfolio_optimization_service
+    ports:
+      - "5003:5000"
+    volumes:
+      - ./portfolio_optimization_service:/app
+    environment:
+      - DATABASE_URL=postgresql://stockuser:stockpassword@db:5432/stockdata
+      - MODEL_TRAINING_SERVICE_URL=http://model_training_service:5002
+      - FLASK_DEBUG=1 # Enable Flask debug mode for more logs
+    depends_on:
+      - db
+      - model_training_service
+    networks:
+      - portfolio_network
+
+  api_gateway_service:
+    build: ./api_gateway_service
+    ports:
+      - "8000:5000"
+    volumes:
+      - ./api_gateway_service:/app
+    environment:
+      - FLASK_APP=app.py
+      - FLASK_RUN_HOST=0.0.0.0
+      - FLASK_DEBUG=0
+      - DATA_INGESTION_SERVICE_URL=http://data_ingestion_service:5001
+      - MODEL_TRAINING_SERVICE_URL=http://model_training_service:5002
+      - PORTFOLIO_OPTIMIZATION_SERVICE_URL=http://portfolio_optimization_service:5000
+    depends_on:
+      data_ingestion_service:
+        condition: service_started
+      model_training_service:
+        condition: service_started
+      portfolio_optimization_service:
+        condition: service_started
+    networks:
+      - portfolio_network
+
+  frontend_service:
+    build: ./frontend_service
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./frontend_service:/app
+    environment:
+      - API_GATEWAY_URL=http://api_gateway_service:5000 # Internal URL for API gateway
+    depends_on:
+      api_gateway_service:
+        condition: service_started
+    networks:
+      - portfolio_network
+
+networks:
+  portfolio_network:
+    driver: bridge
+
+volumes:
+  postgres_data: # Defines the named volume for data persistence
+  trained_models_data: {} # Defines the named volume for trained models 

@@ -1,0 +1,10 @@
+Flask==2.0.1
+Werkzeug==2.0.3
+torch==1.10.0
+SQLAlchemy==1.4.27  # Or a more recent 1.x version, ensure compatibility
+psycopg2-binary==2.9.1 # For PostgreSQL connection
+pandas==1.3.4 # Added for data manipulation
+numpy==1.21.6 # Explicitly add numpy
+scikit-learn==1.0.1 # For MinMaxScaler and train_test_split
+# torchvision and torchaudio are often installed with PyTorch, but we might not need them explicitly yet.
+# We can add them if specific functionalities require them later. 
