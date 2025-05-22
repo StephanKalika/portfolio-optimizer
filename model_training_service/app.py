@@ -12,6 +12,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 import joblib # For saving the scaler
 import json # For saving model config
+import logging
 
 app = Flask(__name__)
 
@@ -135,6 +136,10 @@ def train_model_endpoint():
             "details": "Cannot fetch training data without a database connection."
         }), 503
     
+    # Set logging to INFO level for more detailed output
+    logging.getLogger().setLevel(logging.INFO)
+    app.logger.setLevel(logging.INFO)
+    
     try:
         payload = request.get_json()
         if not payload:
@@ -176,6 +181,7 @@ def train_model_endpoint():
     # Add other specific validations for date formats, model_name format etc. if needed
 
     app.logger.info(f"Training request for model '{model_name}'. Tickers: {tickers}. Period: {start_date}-{end_date}")
+    app.logger.info(f"Training hyperparameters: epochs={epochs}, sequence_length={sequence_length}, hidden_layer_size={hidden_layer_size}, num_layers={num_layers}")
 
     query_sql = text("SELECT date, ticker, adj_close FROM stock_prices WHERE ticker = ANY(:t) AND date >= :sd AND date <= :ed ORDER BY ticker, date ASC")
     
@@ -189,9 +195,13 @@ def train_model_endpoint():
         ticker_processing_status = {"status": "initiated", "details": ""}
         try:
             app.logger.info(f"Fetching data for {ticker_symbol}...")
+            start_time = time.time() # Track time for fetch operation
             with db_engine.connect() as conn:
                 result = conn.execute(query_sql, {"t": [ticker_symbol], "sd": start_date, "ed": end_date}) # Use dict for params
                 df_ticker = pd.DataFrame(result.fetchall(), columns=result.keys())
+            
+            fetch_time = time.time() - start_time
+            app.logger.info(f"Data fetched for {ticker_symbol}: {len(df_ticker)} rows in {fetch_time:.2f} seconds")
 
             if df_ticker.empty or len(df_ticker['adj_close']) <= sequence_length:
                 msg = f"Not enough data for {ticker_symbol} to create sequences (found {len(df_ticker['adj_close'])}, need > {sequence_length}). Skipping."
@@ -201,9 +211,12 @@ def train_model_endpoint():
                 continue
             
             app.logger.info(f"Preprocessing data for {ticker_symbol} ({len(df_ticker)} rows)... ")
+            preprocess_start = time.time()
             X_train, y_train, X_test, y_test, scaler = create_sequences_and_scale(
                 df_ticker['adj_close'], sequence_length, test_split_size if test_split_size > 0 else 0
             )
+            preprocess_time = time.time() - preprocess_start
+            app.logger.info(f"Preprocessing completed in {preprocess_time:.2f} seconds. Training set size: {len(X_train)}")
             
             if len(X_train) == 0:
                 msg = f"Not enough data for {ticker_symbol} after creating sequences for training. Skipping."
@@ -219,17 +232,24 @@ def train_model_endpoint():
             if X_test is not None and y_test is not None and len(X_test) > 0:
                 X_test_tensor = torch.from_numpy(X_test).float().to(device)
                 y_test_tensor = torch.from_numpy(y_test).float().to(device)
+                app.logger.info(f"Test set size: {len(X_test)}")
+            else:
+                app.logger.info("No test set created - using all data for training.")
 
             train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False) # shuffle=False for time series
 
             model = LSTMModel(input_size=input_size, hidden_layer_size=hidden_layer_size, num_layers=num_layers, output_size=output_size).to(device)
+            app.logger.info(f"LSTM model created with {sum(p.numel() for p in model.parameters())} parameters")
+            
             criterion = nn.MSELoss()
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
             app.logger.info(f"Starting training for {ticker_symbol} ({epochs} epochs)... ")
+            train_start_time = time.time()
             final_train_loss = float('inf')
             for epoch in range(epochs):
+                epoch_start = time.time()
                 model.train()
                 epoch_loss_sum = 0
                 batches_processed = 0
@@ -244,8 +264,13 @@ def train_model_endpoint():
                 
                 current_epoch_avg_loss = epoch_loss_sum / batches_processed if batches_processed > 0 else float('inf')
                 final_train_loss = current_epoch_avg_loss # Update final train loss each epoch
-                if (epoch + 1) % 10 == 0 or epochs <= 10 or epoch == epochs -1:
-                    app.logger.info(f"Ticker: {ticker_symbol}, Epoch {epoch+1}/{epochs}, Train Loss: {current_epoch_avg_loss:.6f}")
+                epoch_time = time.time() - epoch_start
+                
+                # Print epoch info more frequently for better visibility
+                app.logger.info(f"Ticker: {ticker_symbol}, Epoch {epoch+1}/{epochs}, Train Loss: {current_epoch_avg_loss:.6f}, Time: {epoch_time:.2f}s")
+            
+            total_train_time = time.time() - train_start_time
+            app.logger.info(f"Training completed for {ticker_symbol} in {total_train_time:.2f} seconds")
             
             # Evaluation on test set
             test_loss_mse = None
@@ -259,6 +284,8 @@ def train_model_endpoint():
                 app.logger.info(f"Ticker: {ticker_symbol}, No test set to evaluate.")
 
             # Save model and scaler
+            app.logger.info(f"Saving model for {ticker_symbol}...")
+            save_start = time.time()
             ticker_model_dir = os.path.join(MODELS_DIR, model_name, ticker_symbol)
             os.makedirs(ticker_model_dir, exist_ok=True)
             
@@ -279,8 +306,9 @@ def train_model_endpoint():
             }
             with open(config_path, 'w') as f:
                 json.dump(model_config, f)
-
-            app.logger.info(f"Model, scaler, and config saved for {ticker_symbol} at {ticker_model_dir}")
+            
+            save_time = time.time() - save_start
+            app.logger.info(f"Model, scaler, and config saved for {ticker_symbol} at {ticker_model_dir} in {save_time:.2f} seconds")
             
             ticker_processing_status.update({
                 "status": "success", 
@@ -290,7 +318,8 @@ def train_model_endpoint():
                 "final_train_loss_mse": final_train_loss, # Clarified MSE
                 "test_loss_mse": test_loss_mse,
                 "data_points_train": len(X_train_tensor),
-                "data_points_test": len(X_test_tensor) if X_test_tensor is not None else 0
+                "data_points_test": len(X_test_tensor) if X_test_tensor is not None else 0,
+                "training_time_seconds": total_train_time
             })
             training_summary_per_ticker[ticker_symbol] = ticker_processing_status
 
@@ -434,6 +463,85 @@ def predict_model_endpoint():
         return jsonify({
             "status": "error", 
             "error": {"code": "PREDICTION_ERROR", "message": "An unexpected error occurred during prediction."},
+            "details": str(e)
+        }), 500
+
+@app.route('/model/list', methods=['GET'])
+def list_models_endpoint():
+    """Endpoint to list all available trained models with metadata."""
+    try:
+        # Dictionary to hold model info
+        all_models = {}
+        
+        # Walk through the models directory
+        for model_name in os.listdir(MODELS_DIR):
+            model_path = os.path.join(MODELS_DIR, model_name)
+            
+            # Skip if not a directory
+            if not os.path.isdir(model_path):
+                continue
+                
+            model_info = {
+                "name": model_name,
+                "tickers": [],
+                "creation_date": None,
+                "ticker_details": {}
+            }
+            
+            # Get tickers for this model
+            for ticker in os.listdir(model_path):
+                ticker_path = os.path.join(model_path, ticker)
+                
+                # Skip if not a directory
+                if not os.path.isdir(ticker_path):
+                    continue
+                
+                model_info["tickers"].append(ticker)
+                
+                # Get ticker-specific details
+                ticker_details = {}
+                
+                # Check for model file
+                model_file_path = os.path.join(ticker_path, "model.pth")
+                if os.path.exists(model_file_path):
+                    ticker_details["model_file"] = "model.pth"
+                    # Get creation date from model file
+                    if model_info["creation_date"] is None:
+                        model_info["creation_date"] = time.ctime(os.path.getctime(model_file_path))
+                
+                # Check for config file
+                config_path = os.path.join(ticker_path, "model_config.json")
+                if os.path.exists(config_path):
+                    ticker_details["config_file"] = "model_config.json"
+                    # Load model configuration to get more details
+                    try:
+                        with open(config_path, 'r') as f:
+                            model_config = json.load(f)
+                            ticker_details["config"] = model_config
+                    except Exception as e:
+                        app.logger.warning(f"Could not load config for {model_name}/{ticker}: {e}")
+                        ticker_details["config_error"] = str(e)
+                
+                # Add ticker details to model info
+                model_info["ticker_details"][ticker] = ticker_details
+            
+            # Only add models that have ticker data
+            if model_info["tickers"]:
+                all_models[model_name] = model_info
+        
+        return jsonify({
+            "status": "success",
+            "data": {
+                "models": all_models
+            },
+            "message": f"Found {len(all_models)} trained models."
+        }), 200
+    
+    except Exception as e:
+        app.logger.error(f"Error listing models: {e}", exc_info=True)
+        return jsonify({
+            "status": "error", 
+            "error": {"code": "MODEL_LIST_ERROR", "message": "An error occurred while listing models."},
             "details": str(e)
         }), 500
 

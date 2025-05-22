@@ -106,8 +106,13 @@ def optimize_json_response(response, use_msgpack=False):
     
     # Handle JSON response
     try:
+        # For large responses, don't use stream=True to ensure we get the complete content
+        # safely store the entire response content
+        response_content = response.content
+        
         # Parse JSON data
-        response_data = response.json()
+        import json
+        response_data = json.loads(response_content)
         
         # If response is particularly large and client supports msgpack
         if use_msgpack and 'application/x-msgpack' in request.headers.get('Accept', ''):
@@ -123,15 +128,14 @@ def optimize_json_response(response, use_msgpack=False):
         # Standard JSON response
         return jsonify(response_data), response.status_code, response_headers
     
-    except requests.exceptions.JSONDecodeError as e:
+    except json.JSONDecodeError as e:
         logger.error(f"Failed to decode JSON response: {e}")
-        logger.debug(f"Response content (truncated): {response.text[:1000]}")
+        logger.debug(f"Response content (truncated): {response_content[:1000] if response_content else 'Empty response'}")
         
         # Handle incomplete JSON response
         try:
-            import json
             # Try to repair truncated JSON (simplified approach)
-            text = response.text.strip()
+            text = response_content.decode('utf-8').strip()
             if text:
                 # Very simple repair attempt - add closing brackets if needed
                 if text.endswith(','):
@@ -150,7 +154,11 @@ def optimize_json_response(response, use_msgpack=False):
             logger.error(f"Failed to repair JSON: {json_err}")
         
         # Return raw response if all else fails
-        return Response(response.text, status=response.status_code, headers=response_headers)
+        return Response(response_content, status=response.status_code, headers=response_headers)
+    except Exception as e:
+        logger.error(f"Error processing response: {e}")
+        # If we can't process the JSON, return the raw content
+        return Response(response.content, status=response.status_code, headers=response_headers)
 
 # Generic proxy function with circuit breaker integration
 def proxy_request(service_url, original_request, breaker, timeout=60, use_msgpack=False):
@@ -270,11 +278,66 @@ def model_train_proxy():
 def model_predict_proxy():
     return proxy_request(MODEL_TRAINING_SERVICE_URL, request, model_training_breaker, timeout=60)
 
+@app.route('/api/v1/model/list', methods=['GET'])
+def model_list_proxy():
+    return proxy_request(MODEL_TRAINING_SERVICE_URL, request, model_training_breaker, timeout=30)
+
 # --- Portfolio Optimization Routes ---
 @app.route('/api/v1/optimize', methods=['POST'])
 def optimize_portfolio_proxy():
-    # Use message pack for optimization requests which can have large responses
-    return proxy_request(PORTFOLIO_OPTIMIZATION_SERVICE_URL, request, portfolio_optimization_breaker, timeout=180, use_msgpack=True)
+    try:
+        # Special handling for portfolio optimization which can have large responses
+        target_url = PORTFOLIO_OPTIMIZATION_SERVICE_URL + "/optimize"
+        
+        headers = {key: value for (key, value) in request.headers if key != 'Host'}
+        if request.data and 'Content-Type' not in headers:
+            headers['Content-Type'] = request.content_type
+
+        logger.info(f"Proxying {request.method} to {target_url}")
+
+        # Define a function to be executed with the circuit breaker
+        @portfolio_optimization_breaker
+        def make_request():
+            # Use a longer timeout for optimization requests
+            resp = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                json=request.get_json(),  # Use json parameter for more reliable JSON handling
+                timeout=180,
+                stream=False  # Don't use streaming for this endpoint to avoid incomplete reads
+            )
+            
+            # Check if response is valid
+            resp.raise_for_status()
+            return resp
+
+        # Execute request with circuit breaker
+        resp = make_request()
+        
+        # Get the complete response content immediately
+        response_content = resp.content
+        
+        # Process the response
+        try:
+            response_data = resp.json()
+            return jsonify(response_data), resp.status_code
+        except:
+            # If JSON parsing fails, return content as-is
+            return Response(response_content, status=resp.status_code, 
+                           content_type=resp.headers.get('Content-Type', 'application/json'))
+    
+    except Exception as e:
+        logger.error(f"Error in portfolio optimization proxy: {e}", exc_info=True)
+        return jsonify({
+            "status": "error",
+            "source": "api_gateway",
+            "error": {
+                "code": "PROXY_EXECUTION_ERROR",
+                "message": "Failed to proxy portfolio optimization request",
+                "original_exception": str(e)
+            }
+        }), 500
 
 # Health check endpoints for each service to test the circuit breakers
 @app.route('/api/v1/status/data-ingestion', methods=['GET'])

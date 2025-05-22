@@ -344,6 +344,10 @@ def optimize_portfolio_endpoint():
         app.logger.error(f"[/optimize] Invalid JSON payload: {e}", exc_info=True) # LOGGING
         return jsonify({"status": "error", "error": {"code": "VALIDATION_ERROR", "message": f"Invalid JSON payload: {e}"}}), 400
 
+    # Check if simplified response is requested (to reduce response size)
+    simplified_response = payload.get('simplified_response', False)
+    app.logger.info(f"[/optimize] Simplified response requested: {simplified_response}")
+
     required_fields = ["tickers", "model_name", "start_date", "end_date"]
     missing_fields = [field for field in required_fields if field not in payload]
     if missing_fields:
@@ -365,9 +369,6 @@ def optimize_portfolio_endpoint():
     prediction_sequence_end_date = historical_end_date 
     
     # Default sequence length for predictions, could be part of model_config in future
-    # prediction_params = payload.get('prediction_params', {'sequence_length': 60}) 
-    # The 'prediction_parameters' structure was in the original user story (step 3 of portfolio_optimization_service)
-    # Let's ensure we get it from the payload as intended.
     prediction_params = payload.get('prediction_parameters') # Ensure this is passed in the request
     if not prediction_params or not isinstance(prediction_params, dict) or 'sequence_length' not in prediction_params:
         msg = "'prediction_parameters' must be a dictionary and include 'sequence_length'."
@@ -479,38 +480,50 @@ def optimize_portfolio_endpoint():
         app.logger.info(f"[/optimize] Sharpe ratio optimization completed using model returns. Sharpe: {opt_sharpe}") # LOGGING
 
         # Prepare output
-        weights_map = {asset: weight for asset, weight in zip(final_assets_for_opt, optimized_weights.tolist())}
+        weights_map = {asset: float(weight) for asset, weight in zip(final_assets_for_opt, optimized_weights.tolist())}
         
-        # For output, also include the original successful_predictions (raw model output)
-        # and the current prices used for return calculation.
-        model_output_details = {
-            asset: {
-                "predicted_next_price": successful_predictions.get(asset),
-                "current_price_used_for_return_calc": current_prices_map.get(asset),
-                "calculated_daily_return_from_prediction": ((successful_predictions.get(asset) / current_prices_map.get(asset)) - 1) if current_prices_map.get(asset) and successful_predictions.get(asset) else None
-            } for asset in final_assets_for_opt
-        }
+        # For detailed response, include additional info
+        if not simplified_response:
+            # For output, also include the original successful_predictions (raw model output)
+            # and the current prices used for return calculation.
+            model_output_details = {
+                asset: {
+                    "predicted_next_price": float(successful_predictions.get(asset)) if successful_predictions.get(asset) is not None else None,
+                    "current_price_used_for_return_calc": float(current_prices_map.get(asset)) if current_prices_map.get(asset) is not None else None,
+                    "calculated_daily_return_from_prediction": float((successful_predictions.get(asset) / current_prices_map.get(asset)) - 1) if current_prices_map.get(asset) and successful_predictions.get(asset) else None
+                } for asset in final_assets_for_opt
+            }
         
         app.logger.info(f"[/optimize] FINAL VALUES BEFORE JSON: opt_return={opt_return}, opt_volatility={opt_volatility}, opt_sharpe={opt_sharpe}") # DEBUG LOG
 
-        return jsonify({
+        # Core response metrics that are always included
+        metrics = {
+            "portfolio_expected_annual_return_from_model": float(opt_return) if opt_return is not None else None,
+            "portfolio_expected_annual_volatility": float(opt_volatility) if opt_volatility is not None else None,
+            "portfolio_sharpe_ratio_from_model": float(opt_sharpe) if opt_sharpe is not None and np.isfinite(opt_sharpe) else None
+        }
+
+        # Base response that's always included
+        response_data = {
             "status": "success",
-            "data": {
-                "optimized_assets": final_assets_for_opt,
-                "optimized_weights": weights_map, 
-                "portfolio_expected_annual_return_from_model": float(opt_return) if opt_return is not None else None,
-                "portfolio_expected_annual_volatility_from_hist_cov": float(opt_volatility) if opt_volatility is not None else None,
-                "portfolio_sharpe_ratio_from_model_er_hist_cov": float(opt_sharpe) if opt_sharpe is not None and np.isfinite(opt_sharpe) else None, # Handle potential -np.inf
-                "model_inputs_for_optimization": {
-                    asset: {
-                        "annualized_expected_return_used": float(expected_returns_for_opt[i]) if expected_returns_for_opt[i] is not None else None,
-                        "model_prediction_details": model_output_details.get(asset)
-                    } for i, asset in enumerate(final_assets_for_opt)
-                }
-                # "covariance_matrix_used": annual_cov_matrix_hist.to_dict() # Can be large, omit for now
-            },
-            "message": "Portfolio optimized successfully for Sharpe ratio using model-predicted returns and historical covariance."
-        }), 200
+            "optimized_weights": weights_map,
+            "metrics": metrics,
+            "message": "Portfolio optimized successfully."
+        }
+
+        # Add details only if not simplified
+        if not simplified_response:
+            response_data["details"] = {
+                "current_prices": {asset: float(price) for asset, price in current_prices_map.items() if asset in final_assets_for_opt},
+                "predicted_prices": {asset: float(pred) for asset, pred in successful_predictions.items() if asset in final_assets_for_opt},
+                "predicted_daily_returns": {asset: float(ret) for asset, ret in zip(final_assets_for_opt, expected_daily_returns_pred.tolist())}
+            }
+
+        # Return the response with proper headers to avoid chunking issues
+        response = jsonify(response_data)
+        response.headers['Content-Length'] = str(len(response.data))
+        response.headers['Connection'] = 'close'
+        return response, 200
 
     except ConnectionError as e: # Specifically for DB issues raised by helpers
         app.logger.error(f"[/optimize] Connection error: {e}", exc_info=True) # LOGGING
@@ -522,8 +535,7 @@ def optimize_portfolio_endpoint():
         app.logger.error(f"[/optimize] Unexpected error during optimization: {e}", exc_info=True) # LOGGING
         return jsonify({
             "status": "error", 
-            "error": {"code": "OPTIMIZATION_ERROR", "message": "An unexpected error occurred during portfolio optimization." },
-            "details": str(e)
+            "error": {"code": "OPTIMIZATION_ERROR", "message": f"An unexpected error occurred: {str(e)}"}
         }), 500
 
 if __name__ == '__main__':
