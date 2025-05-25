@@ -5,7 +5,7 @@ A microservice-based portfolio optimization system that uses deep learning metho
 ## Overview
 
 This project implements a portfolio optimization system using:
-- Deep Learning (LSTM neural networks) for stock price prediction
+- Deep Learning (LSTM, GRU, and Transformer neural networks) for stock price prediction
 - Modern portfolio theory for optimization
 - Microservice architecture for scalability and maintainability
 
@@ -16,16 +16,17 @@ The system is composed of the following microservices:
 1. **Frontend Service**: Streamlit-based user interface
 2. **API Gateway**: Routes requests to the appropriate services
 3. **Data Ingestion Service**: Fetches and stores historical stock data from Financial Modeling Prep API
-4. **Model Training Service**: Trains LSTM models for stock price prediction
+4. **Model Training Service**: Trains deep learning models for stock price prediction
 5. **Portfolio Optimization Service**: Optimizes portfolio weights using model predictions
 6. **Database**: PostgreSQL for data storage
 
 ## Key Features
 
 - Fetch historical stock data from Financial Modeling Prep API
-- Train LSTM neural networks for time series prediction
-- Optimize portfolio weights using predicted returns
+- Train various neural networks (LSTM, GRU, Transformer) for time series prediction
+- Optimize portfolio weights using predicted returns and historical covariance
 - Interactive web interface for data visualization and portfolio management
+- Robust error handling and service fallback mechanisms
 
 ## Getting Started
 
@@ -60,27 +61,35 @@ The system is composed of the following microservices:
 ## Usage
 
 1. **Data Ingestion**: Fetch historical stock data for selected tickers
-2. **Model Training**: Train LSTM models on the fetched data
+2. **Model Training**: Train deep learning models on the fetched data
 3. **Portfolio Optimization**: Generate optimized portfolio weights
 
 ## Technologies Used
 
-- **Backend**: Python, Flask, SQLAlchemy
+- **Backend**: Python, FastAPI, SQLAlchemy
 - **Machine Learning**: PyTorch, pandas, numpy
 - **Frontend**: Streamlit
 - **Database**: PostgreSQL
 - **Containerization**: Docker, Docker Compose
-- **API Gateway**: Flask with circuit breaker pattern
+- **API Gateway**: FastAPI with circuit breaker pattern
+
+## Recent Updates
+
+- Migrated Data Ingestion Service from Flask to FastAPI for improved performance and async support
+- Enhanced error handling in the API Gateway
+- Added direct service connection fallback in the frontend when API Gateway is unavailable
+- Fixed model listing and portfolio optimization display in the UI
+- Added support for training with variable number of epochs
 
 ## Project Structure
 
 ```
 portfolio-optimizer/
-├── api_gateway_service/     # API Gateway service
-├── data_ingestion_service/  # Service for fetching stock data
+├── api_gateway_service/     # API Gateway service (FastAPI)
+├── data_ingestion_service/  # Service for fetching stock data (FastAPI)
 ├── frontend_service/        # Streamlit-based UI
-├── model_training_service/  # Service for training prediction models
-├── portfolio_optimization_service/ # Service for portfolio optimization
+├── model_training_service/  # Service for training prediction models (FastAPI)
+├── portfolio_optimization_service/ # Service for portfolio optimization (FastAPI)
 └── docker-compose.yml       # Docker Compose configuration
 ```
 
