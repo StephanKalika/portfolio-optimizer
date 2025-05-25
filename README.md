@@ -65,14 +65,14 @@ All backend services are standardized on FastAPI for consistent API documentatio
    docker-compose up -d
    ```
 
-4. Access the frontend at http://localhost:5000
+4. Access the frontend at http://localhost:8501
 
 ## API Documentation
 
-- API Gateway Swagger UI: http://localhost:5000/api/docs
+- API Gateway Swagger UI: http://localhost:8000/api/docs
 - Data Ingestion Service Docs: http://localhost:5001/docs 
-- Model Training Service Docs: http://localhost:8000/docs
-- Portfolio Optimization Service Docs: http://localhost:8001/docs
+- Model Training Service Docs: http://localhost:5002/docs
+- Portfolio Optimization Service Docs: http://localhost:5003/docs
 
 ## Monitoring
 
