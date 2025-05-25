@@ -1,0 +1,670 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "description": "Shows if services are up and running",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "text": "Down"
+                },
+                "1": {
+                  "text": "Up"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 10,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {},
+        "textMode": "auto"
+      },
+      "pluginVersion": "7.5.5",
+      "targets": [
+        {
+          "expr": "up{job=\"api_gateway\"}",
+          "interval": "",
+          "legendFormat": "API Gateway",
+          "refId": "A"
+        },
+        {
+          "expr": "up{job=\"data_ingestion\"}",
+          "interval": "",
+          "legendFormat": "Data Ingestion",
+          "refId": "B"
+        },
+        {
+          "expr": "up{job=\"model_training\"}",
+          "interval": "",
+          "legendFormat": "Model Training",
+          "refId": "C"
+        },
+        {
+          "expr": "up{job=\"portfolio_optimization\"}",
+          "interval": "",
+          "legendFormat": "Portfolio Optimization",
+          "refId": "D"
+        },
+        {
+          "expr": "up{job=\"prometheus\"}",
+          "interval": "",
+          "legendFormat": "Prometheus",
+          "refId": "E"
+        },
+        {
+          "expr": "up{job=\"node_exporter\"}",
+          "interval": "",
+          "legendFormat": "Node Exporter",
+          "refId": "F"
+        }
+      ],
+      "title": "Service Availability",
+      "type": "stat"
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "hiddenSeries": false,
+      "id": 2,
+      "legend": {
+        "avg": false,
+        "current": false,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
+      "lines": true,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "options": {
+        "alertThreshold": true
+      },
+      "percentage": false,
+      "pluginVersion": "7.5.5",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "expr": "api_gateway_service_cpu_usage_percent",
+          "interval": "",
+          "legendFormat": "API Gateway",
+          "refId": "A"
+        },
+        {
+          "expr": "data_ingestion_service_cpu_usage_percent",
+          "interval": "",
+          "legendFormat": "Data Ingestion",
+          "refId": "B"
+        },
+        {
+          "expr": "model_training_service_cpu_usage_percent",
+          "interval": "",
+          "legendFormat": "Model Training",
+          "refId": "C"
+        },
+        {
+          "expr": "portfolio_optimization_service_cpu_usage_percent",
+          "interval": "",
+          "legendFormat": "Portfolio Optimization",
+          "refId": "D"
+        },
+        {
+          "expr": "avg by(instance) (rate(node_cpu_seconds_total{mode=\"user\"}[1m])) * 100",
+          "interval": "",
+          "legendFormat": "Node Exporter",
+          "refId": "E"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "CPU Usage",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "format": "percent",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "hiddenSeries": false,
+      "id": 4,
+      "legend": {
+        "avg": false,
+        "current": false,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
+      "lines": true,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "options": {
+        "alertThreshold": true
+      },
+      "percentage": false,
+      "pluginVersion": "7.5.5",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "expr": "api_gateway_service_memory_usage_bytes / 1024 / 1024",
+          "interval": "",
+          "legendFormat": "API Gateway",
+          "refId": "A"
+        },
+        {
+          "expr": "data_ingestion_service_memory_usage_bytes / 1024 / 1024",
+          "interval": "",
+          "legendFormat": "Data Ingestion",
+          "refId": "B"
+        },
+        {
+          "expr": "model_training_service_memory_usage_bytes / 1024 / 1024",
+          "interval": "",
+          "legendFormat": "Model Training",
+          "refId": "C"
+        },
+        {
+          "expr": "portfolio_optimization_service_memory_usage_bytes / 1024 / 1024",
+          "interval": "",
+          "legendFormat": "Portfolio Optimization",
+          "refId": "D"
+        },
+        {
+          "expr": "node_memory_Active_bytes / 1024 / 1024",
+          "interval": "",
+          "legendFormat": "Node Exporter",
+          "refId": "E"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "Memory Usage (MB)",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "format": "decmbytes",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "hiddenSeries": false,
+      "id": 6,
+      "legend": {
+        "avg": false,
+        "current": false,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
+      "lines": true,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "options": {
+        "alertThreshold": true
+      },
+      "percentage": false,
+      "pluginVersion": "7.5.5",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "expr": "sum by(job) (rate(api_gateway_service_http_request_duration_seconds_sum[5m])) / sum by(job) (rate(api_gateway_service_http_request_duration_seconds_count[5m]))",
+          "interval": "",
+          "legendFormat": "API Gateway",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by(job) (rate(model_training_service_http_request_duration_seconds_sum[5m])) / sum by(job) (rate(model_training_service_http_request_duration_seconds_count[5m]))",
+          "interval": "",
+          "legendFormat": "Model Training",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by(job) (rate(portfolio_optimization_service_http_request_duration_seconds_sum[5m])) / sum by(job) (rate(portfolio_optimization_service_http_request_duration_seconds_count[5m]))",
+          "interval": "",
+          "legendFormat": "Portfolio Optimization",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by(job) (rate(data_ingestion_service_http_request_duration_seconds_sum[5m])) / sum by(job) (rate(data_ingestion_service_http_request_duration_seconds_count[5m]))",
+          "interval": "",
+          "legendFormat": "Data Ingestion",
+          "refId": "D"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "Average Response Time",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "format": "s",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "aliasColors": {},
+      "bars": false,
+      "dashLength": 10,
+      "dashes": false,
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "fill": 1,
+      "fillGradient": 0,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "hiddenSeries": false,
+      "id": 8,
+      "legend": {
+        "avg": false,
+        "current": false,
+        "max": false,
+        "min": false,
+        "show": true,
+        "total": false,
+        "values": false
+      },
+      "lines": true,
+      "linewidth": 1,
+      "nullPointMode": "null",
+      "options": {
+        "alertThreshold": true
+      },
+      "percentage": false,
+      "pluginVersion": "7.5.5",
+      "pointradius": 2,
+      "points": false,
+      "renderer": "flot",
+      "seriesOverrides": [],
+      "spaceLength": 10,
+      "stack": false,
+      "steppedLine": false,
+      "targets": [
+        {
+          "expr": "sum by(job) (rate(api_gateway_service_http_requests_total[5m]))",
+          "interval": "",
+          "legendFormat": "API Gateway",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by(job) (rate(model_training_service_http_requests_total[5m]))",
+          "interval": "",
+          "legendFormat": "Model Training",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by(job) (rate(portfolio_optimization_service_http_requests_total[5m]))",
+          "interval": "",
+          "legendFormat": "Portfolio Optimization",
+          "refId": "C"
+        },
+        {
+          "expr": "sum by(job) (rate(data_ingestion_service_http_requests_total[5m]))",
+          "interval": "",
+          "legendFormat": "Data Ingestion",
+          "refId": "D"
+        }
+      ],
+      "thresholds": [],
+      "timeFrom": null,
+      "timeRegions": [],
+      "timeShift": null,
+      "title": "Request Rate",
+      "tooltip": {
+        "shared": true,
+        "sort": 0,
+        "value_type": "individual"
+      },
+      "type": "graph",
+      "xaxis": {
+        "buckets": null,
+        "mode": "time",
+        "name": null,
+        "show": true,
+        "values": []
+      },
+      "yaxes": [
+        {
+          "format": "reqps",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        },
+        {
+          "format": "short",
+          "label": null,
+          "logBase": 1,
+          "max": null,
+          "min": null,
+          "show": true
+        }
+      ],
+      "yaxis": {
+        "align": false,
+        "alignLevel": null
+      }
+    },
+    {
+      "datasource": "Prometheus",
+      "description": "Detailed status of each service",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 12,
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "text": {}
+      },
+      "pluginVersion": "7.5.5",
+      "targets": [
+        {
+          "expr": "api_gateway_service_http_requests_total",
+          "interval": "",
+          "legendFormat": "API Gateway - {{path}} ({{code}})",
+          "refId": "A"
+        },
+        {
+          "expr": "data_ingestion_service_http_requests_total",
+          "interval": "",
+          "legendFormat": "Data Ingestion - {{path}} ({{code}})",
+          "refId": "B"
+        },
+        {
+          "expr": "model_training_service_http_requests_total",
+          "interval": "",
+          "legendFormat": "Model Training - {{path}} ({{code}})",
+          "refId": "C"
+        },
+        {
+          "expr": "portfolio_optimization_service_http_requests_total",
+          "interval": "",
+          "legendFormat": "Portfolio Optimization - {{path}} ({{code}})",
+          "refId": "D"
+        }
+      ],
+      "title": "Service Status",
+      "type": "bargauge"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 27,
+  "style": "dark",
+  "tags": [],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Portfolio Optimizer Dashboard",
+  "uid": "portfolio-dashboard-new",
+  "version": 1
+} 

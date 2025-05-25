@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'api_gateway'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['api_gateway_service:5000']
+
+  - job_name: 'model_training'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['model_training_service:8000']
+    honor_labels: true
+    scrape_timeout: 5s
+
+  - job_name: 'data_ingestion'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['data_ingestion_service:5001']
+
+  - job_name: 'portfolio_optimization'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['portfolio_optimization_service:8001']
+
+  - job_name: 'node_exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+
+alerting:
+  alertmanagers:
+    - static_configs:
+      - targets:
+        # - 'alertmanager:9093'
+
+rule_files:
+  # - "alert_rules.yml" 
