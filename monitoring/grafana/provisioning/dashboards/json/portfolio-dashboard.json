@@ -294,7 +294,7 @@
           "refId": "B"
         },
         {
-          "expr": "model_training_service_memory_usage_bytes / 1024 / 1024",
+          "expr": "model_training_service_memory_usage_mb",
           "interval": "",
           "legendFormat": "Model Training",
           "refId": "C"
