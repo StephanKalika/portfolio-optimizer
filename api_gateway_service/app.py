@@ -555,6 +555,8 @@ async def check_backend_service_health(service_name_key: str, service_display_na
     if not service_url_base:
         logger.warning(f"Health check for '{service_display_name}' skipped: URL not configured.")
         error_detail = ErrorDetail(code="SERVICE_NOT_CONFIGURED_GATEWAY", message=f"URL for {service_display_name} not configured.")
+        # Track proxy request failure
+        prometheus_metrics.track_proxy_request(service_name_key, "error")
         return JSONResponse(status_code=404, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
 
     health_target_url = str(service_url_base).rstrip('/') + "/health"
@@ -568,29 +570,62 @@ async def check_backend_service_health(service_name_key: str, service_display_na
             return resp.json() 
         
         health_data = await perform_health_check_async()
+        
+        # Get circuit breaker state safely
+        circuit_state = "closed"
+        if hasattr(breaker.current_state, 'name'):
+            circuit_state = breaker.current_state.name
+        elif isinstance(breaker.current_state, str):
+            circuit_state = breaker.current_state
+        
+        # Track successful proxy request
+        prometheus_metrics.track_proxy_request(service_name_key, "success")
+            
         return JSONResponse(content={
             "status": "success",
             "service_name": service_display_name,
-            "gateway_circuit_breaker_state": breaker.current_state.name,
+            "gateway_circuit_breaker_state": circuit_state,
             "upstream_health_status": health_data
         })
     except pybreaker.CircuitBreakerError as e:
-        logger.error(f"Circuit breaker OPEN for {service_display_name} health check at {health_target_url}: {e}")
-        error_detail = ErrorDetail(code="SERVICE_CIRCUIT_OPEN", message=f"{service_display_name} is temporarily unavailable (circuit open).", target_service_url=health_target_url, circuit_state=breaker.current_state.name)
+        # Get circuit breaker state safely
+        circuit_state = "open"
+        if hasattr(breaker.current_state, 'name'):
+            circuit_state = breaker.current_state.name
+        elif isinstance(breaker.current_state, str):
+            circuit_state = breaker.current_state
+        
+        # Track circuit breaker failure
+        prometheus_metrics.track_proxy_request(service_name_key, "circuit_open")
+            
+        logger.error(f"Circuit breaker {circuit_state} for {service_display_name} health check at {health_target_url}: {e}")
+        error_detail = ErrorDetail(code="SERVICE_CIRCUIT_OPEN", message=f"{service_display_name} is temporarily unavailable (circuit {circuit_state}).", target_service_url=health_target_url, circuit_state=circuit_state)
         return JSONResponse(status_code=503, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
     except httpx.HTTPStatusError as e:
+        # Track HTTP error
+        prometheus_metrics.track_proxy_request(service_name_key, f"http_error_{e.response.status_code}")
+        
         logger.error(f"HTTP error from {service_display_name} health check at {health_target_url}: {e.response.status_code} - {e.response.text[:200]}")
         error_detail = ErrorDetail(code=f"UPSTREAM_HEALTH_HTTP_ERROR_{e.response.status_code}", message=f"Error from {service_display_name} health check.", target_service_url=health_target_url, original_exception=e.response.text[:200], upstream_status_code=e.response.status_code)
         return JSONResponse(status_code=e.response.status_code, content=GatewayErrorResponse(source="upstream", error=error_detail).dict())
     except httpx.RequestError as e: 
+        # Track connection error
+        prometheus_metrics.track_proxy_request(service_name_key, "connection_error")
+        
         logger.error(f"Request error during {service_display_name} health check at {health_target_url}: {e}")
         error_detail = ErrorDetail(code=f"UPSTREAM_HEALTH_UNAVAILABLE", message=f"Could not connect to {service_display_name} health endpoint.", target_service_url=health_target_url, original_exception=str(e))
         return JSONResponse(status_code=503, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
     except json.JSONDecodeError as e:
+        # Track JSON decode error
+        prometheus_metrics.track_proxy_request(service_name_key, "invalid_json")
+        
         logger.error(f"Failed to decode JSON from {service_display_name} health check at {health_target_url}: {e}")
         error_detail = ErrorDetail(code=f"UPSTREAM_HEALTH_INVALID_JSON", message=f"Invalid JSON response from {service_display_name} health check.", target_service_url=health_target_url, original_exception=str(e))
         return JSONResponse(status_code=500, content=GatewayErrorResponse(source="upstream", error=error_detail).dict())
     except Exception as e:
+        # Track unexpected error
+        prometheus_metrics.track_proxy_request(service_name_key, "unexpected_error")
+        
         logger.error(f"Unexpected error during {service_display_name} health check: {e}", exc_info=True)
         error_detail = ErrorDetail(code=f"GATEWAY_HEALTH_CHECK_UNEXPECTED_ERROR", message=f"Unexpected error checking {service_display_name} health.", original_exception=str(e))
         return JSONResponse(status_code=500, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
@@ -635,19 +670,29 @@ async def system_status_endpoint():
                     "reason": "URL not configured"
                 }
                 result["overall_status"] = "degraded"
+                # Track proxy request failure
+                prometheus_metrics.track_proxy_request(service_name, "error")
                 continue
                 
             health_target_url = str(service_url_base).rstrip('/') + "/health"
             
             # Check if circuit breaker is open
             breaker = SERVICE_BREAKERS[service_name]
-            if hasattr(breaker.current_state, 'name') and breaker.current_state.name == 'open':
+            circuit_state = "closed"
+            if hasattr(breaker.current_state, 'name'):
+                circuit_state = breaker.current_state.name
+            elif isinstance(breaker.current_state, str):
+                circuit_state = breaker.current_state
+                
+            if circuit_state == 'open':
                 result["services"][service_name] = {
                     "status": "unavailable",
                     "reason": "circuit breaker open",
-                    "circuit_state": breaker.current_state.name
+                    "circuit_state": circuit_state
                 }
                 result["overall_status"] = "degraded"
+                # Track circuit breaker failure
+                prometheus_metrics.track_proxy_request(service_name, "circuit_open")
                 continue
                 
             # Make health check request
@@ -659,6 +704,8 @@ async def system_status_endpoint():
                     "response_time_ms": round(resp.elapsed.total_seconds() * 1000, 2),
                     "details": health_data
                 }
+                # Track successful proxy request
+                prometheus_metrics.track_proxy_request(service_name, "success")
             else:
                 result["services"][service_name] = {
                     "status": "unhealthy",
@@ -666,12 +713,16 @@ async def system_status_endpoint():
                     "reason": "Non-200 response"
                 }
                 result["overall_status"] = "degraded"
+                # Track HTTP error
+                prometheus_metrics.track_proxy_request(service_name, f"http_error_{resp.status_code}")
         except Exception as e:
             result["services"][service_name] = {
                 "status": "error",
                 "reason": str(e)
             }
             result["overall_status"] = "degraded"
+            # Track unexpected error
+            prometheus_metrics.track_proxy_request(service_name, "unexpected_error")
     
     # Check if any service is down
     if all(service["status"] == "error" or service["status"] == "unavailable" 
