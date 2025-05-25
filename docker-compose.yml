@@ -34,15 +34,12 @@ services:
   model_training_service:
     build: ./model_training_service
     ports:
-      - "5002:5002"
+      - "5002:8000"
     volumes:
       - ./model_training_service:/app
       - trained_models_data:/app/trained_models # Persist trained models
     environment:
       - DATABASE_URL=postgresql://stockuser:stockpassword@db:5432/stockdata
-      - FLASK_APP=app.py
-      - FLASK_RUN_HOST=0.0.0.0
-      - FLASK_DEBUG=0 # Disable Flask debug mode and reloader for stability
     depends_on:
       - db
     networks:
@@ -51,13 +48,12 @@ services:
   portfolio_optimization_service:
     build: ./portfolio_optimization_service
     ports:
-      - "5003:5000"
+      - "5003:8001"
     volumes:
       - ./portfolio_optimization_service:/app
     environment:
       - DATABASE_URL=postgresql://stockuser:stockpassword@db:5432/stockdata
-      - MODEL_TRAINING_SERVICE_URL=http://model_training_service:5002
-      - FLASK_DEBUG=1 # Enable Flask debug mode for more logs
+      - MODEL_TRAINING_SERVICE_URL=http://model_training_service:8000
     depends_on:
       - db
       - model_training_service
@@ -71,12 +67,9 @@ services:
     volumes:
       - ./api_gateway_service:/app
     environment:
-      - FLASK_APP=app.py
-      - FLASK_RUN_HOST=0.0.0.0
-      - FLASK_DEBUG=0
       - DATA_INGESTION_SERVICE_URL=http://data_ingestion_service:5001
-      - MODEL_TRAINING_SERVICE_URL=http://model_training_service:5002
-      - PORTFOLIO_OPTIMIZATION_SERVICE_URL=http://portfolio_optimization_service:5000
+      - MODEL_TRAINING_SERVICE_URL=http://model_training_service:8000
+      - PORTFOLIO_OPTIMIZATION_SERVICE_URL=http://portfolio_optimization_service:8001
     depends_on:
       data_ingestion_service:
         condition: service_started

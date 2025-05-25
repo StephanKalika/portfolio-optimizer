@@ -13,13 +13,11 @@ COPY . /app
 # Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Make port 5003 available to the world outside this container
-EXPOSE 5003
+# Make port 8001 available
+EXPOSE 8001
 
-# Define environment variable
-ENV FLASK_APP app.py
-ENV FLASK_RUN_HOST 0.0.0.0
-ENV FLASK_DEBUG=1
+# Define environment variable for unbuffered Python output
+ENV PYTHONUNBUFFERED=1
 
-# Run app.py when the container launches
-CMD ["flask", "run"] 
+# Run Uvicorn server
+CMD echo "DEBUG: Starting portfolio_optimization_service with latest Dockerfile CMD" && uvicorn app:app --host 0.0.0.0 --port 8001 

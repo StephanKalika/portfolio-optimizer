@@ -6,4 +6,7 @@ requests==2.26.0
 # alpha_vantage removed as it requires a premium subscription for our needs
 # yfinance removed as we are switching to Alpha Vantage
 psycopg2-binary==2.9.3
-SQLAlchemy==1.4.29 
+SQLAlchemy==1.4.29
+gunicorn
+fastapi
+uvicorn[standard] 

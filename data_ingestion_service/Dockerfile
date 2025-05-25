@@ -8,14 +8,16 @@ WORKDIR /app
 COPY . /app
 
 # Install any needed packages specified in requirements.txt
+# Gunicorn will be installed here if added to requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Make port 5001 available to the world outside this container
-EXPOSE 5001
+# Make port 8888 available to the world outside this container
+EXPOSE 8888
 
-# Define environment variable
-ENV FLASK_APP app.py
-ENV FLASK_RUN_HOST 0.0.0.0
+# Remove Flask-specific ENV vars for running dev server
+# ENV FLASK_APP app.py
+# ENV FLASK_RUN_HOST 0.0.0.0
 
-# Run app.py when the container launches
-CMD ["flask", "run", "--port", "5001"] 
+# Run the FastAPI app with uvicorn when the container launches
+# Using workers=4 and timeout=120s for potentially long FMP API calls / DB operations
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8888", "--workers", "4", "--timeout-keep-alive", "120"] 

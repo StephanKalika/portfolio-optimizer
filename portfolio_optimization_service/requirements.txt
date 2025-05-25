@@ -1,5 +1,7 @@
-Flask==2.0.1
-Werkzeug==2.0.3
+fastapi
+uvicorn[standard]
+pydantic
+httpx
 requests==2.26.0
 numpy==1.21.6 
 scipy==1.7.3 # For optimization
