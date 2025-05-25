@@ -12,13 +12,44 @@ import uvicorn
 from pydantic import BaseModel, Field, validator
 from typing import List, Optional, Dict, Any, Union
 import datetime
+from fastapi.middleware.cors import CORSMiddleware
+from monitoring.fastapi_prometheus import FastAPIPrometheusMiddleware
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create FastAPI app
-app = FastAPI(title="Data Ingestion Service")
+# Create FastAPI app with enhanced documentation
+app = FastAPI(
+    title="Portfolio Optimizer Data Ingestion Service",
+    description="Service for fetching and storing historical stock data from Financial Modeling Prep API",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    contact={
+        "name": "Portfolio Optimizer Team",
+        "url": "https://github.com/StephanKalika/portfolio-optimizer",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add Prometheus monitoring middleware
+app.add_middleware(
+    FastAPIPrometheusMiddleware,
+    app_name="data_ingestion_service"
+)
 
 # Get API key from environment variable
 FMP_API_KEY = os.getenv('FMP_API_KEY')
@@ -295,4 +326,4 @@ async def shutdown():
     return JSONResponse(content=payload, status_code=200)
 
 if __name__ == '__main__':
-    uvicorn.run("app:app", host="0.0.0.0", port=8888, reload=True) 
+    uvicorn.run("app:app", host="0.0.0.0", port=5001, reload=True) 

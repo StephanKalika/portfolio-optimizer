@@ -10,12 +10,199 @@ import json # For JSONDecodeError and json.dumps
 from functools import wraps
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pydantic import BaseModel, HttpUrl
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+import datetime
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Histogram, Gauge, Summary, Info, CollectorRegistry
+import psutil
+import threading
 
 # Configure logging (FastAPI uses uvicorn logging by default, but good to have a logger instance)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="API Gateway Service", version="1.0.0")
+# Create FastAPI app with enhanced documentation
+app = FastAPI(
+    title="Portfolio Optimizer API Gateway",
+    description="API Gateway for the Portfolio Optimization System that routes requests to appropriate microservices",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+    contact={
+        "name": "Portfolio Optimizer Team",
+        "url": "https://github.com/StephanKalika/portfolio-optimizer",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+)
+
+# Add CORS middleware to allow cross-origin requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add Prometheus metrics
+class PrometheusMetrics:
+    def __init__(self, app_name):
+        self.app_name = app_name
+        self.registry = CollectorRegistry()
+        
+        # Request metrics
+        self.request_counter = Counter(
+            f'{app_name}_http_requests_total',
+            'Total number of HTTP requests',
+            ['method', 'path', 'code'],
+            registry=self.registry
+        )
+        
+        # Request duration metrics
+        self.request_duration = Histogram(
+            f'{app_name}_http_request_duration_seconds',
+            'HTTP request duration in seconds',
+            ['method', 'path', 'code'],
+            registry=self.registry
+        )
+        
+        # System metrics
+        self.cpu_usage = Gauge(
+            f'{app_name}_cpu_usage_percent',
+            'Current CPU usage percentage',
+            registry=self.registry
+        )
+        
+        self.memory_usage = Gauge(
+            f'{app_name}_memory_usage_bytes',
+            'Current memory usage in bytes',
+            registry=self.registry
+        )
+        
+        # Circuit breaker metrics
+        self.circuit_breaker_state = Gauge(
+            f'{app_name}_circuit_breaker_state',
+            'Circuit breaker state (0=closed, 1=open, 2=half-open)',
+            ['service'],
+            registry=self.registry
+        )
+        
+        # Proxy metrics
+        self.proxy_requests = Counter(
+            f'{app_name}_proxy_requests_total',
+            'Total number of proxied requests',
+            ['service', 'status'],
+            registry=self.registry
+        )
+        
+        # Service info
+        self.service_info = Info(
+            f'{app_name}_service_info',
+            'Information about the service',
+            registry=self.registry
+        )
+        self.service_info.info({
+            'version': os.environ.get('SERVICE_VERSION', 'unknown'),
+            'name': app_name
+        })
+        
+        # System metrics collection thread
+        self._metrics_thread = None
+        self._running = False
+    
+    def start_metrics_collection(self):
+        """Start collecting system metrics in a background thread"""
+        self._running = True
+        self._metrics_thread = threading.Thread(target=self._collect_system_metrics)
+        self._metrics_thread.daemon = True
+        self._metrics_thread.start()
+        
+    def _collect_system_metrics(self):
+        """Collect system metrics in a background thread"""
+        while self._running:
+            # Update CPU and memory metrics
+            self.cpu_usage.set(psutil.cpu_percent())
+            self.memory_usage.set(psutil.Process(os.getpid()).memory_info().rss)
+            
+            # Update circuit breaker states
+            for service_name, breaker in SERVICE_BREAKERS.items():
+                state_value = 0  # closed (default)
+                if hasattr(breaker.current_state, 'name'):
+                    state_name = breaker.current_state.name
+                    if state_name == "open":
+                        state_value = 1
+                    elif state_name == "half-open":
+                        state_value = 2
+                else:
+                    # Handle case where current_state is a string
+                    if breaker.current_state == "open":
+                        state_value = 1
+                    elif breaker.current_state == "half-open":
+                        state_value = 2
+                
+                self.circuit_breaker_state.labels(service=service_name).set(state_value)
+                
+            time.sleep(15)  # Update every 15 seconds
+    
+    def track_request(self, method, endpoint, status_code, duration):
+        """Track an HTTP request with its duration"""
+        # Ensure all values are strings
+        method_str = str(method)
+        path_str = str(endpoint)
+        code_str = str(status_code)
+        
+        self.request_counter.labels(method=method_str, path=path_str, code=code_str).inc()
+        self.request_duration.labels(method=method_str, path=path_str, code=code_str).observe(duration)
+    
+    def track_proxy_request(self, service, status):
+        """Track a proxied request"""
+        self.proxy_requests.labels(service=service, status=status).inc()
+    
+    def stop(self):
+        """Stop the metrics collection thread"""
+        self._running = False
+        if self._metrics_thread:
+            self._metrics_thread.join(timeout=1.0)
+
+# Initialize Prometheus metrics
+prometheus_metrics = PrometheusMetrics("api_gateway_service")
+prometheus_metrics.start_metrics_collection()
+
+# Add middleware to track request durations
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start_time = time.time()
+    
+    response = await call_next(request)
+    
+    # Calculate request duration
+    duration = time.time() - start_time
+    
+    # Get the route path or the raw path if no route matched
+    path = request.url.path
+    
+    # Track the request in Prometheus
+    prometheus_metrics.track_request(
+        method=request.method,
+        endpoint=path,
+        status_code=response.status_code,
+        duration=duration
+    )
+    
+    return response
+
+# Add metrics endpoint
+@app.get("/metrics")
+async def metrics():
+    return FastAPIResponse(
+        content=generate_latest(prometheus_metrics.registry),
+        media_type=CONTENT_TYPE_LATEST
+    )
 
 # Environment variables to locate other services
 DATA_INGESTION_SERVICE_URL_STR = os.getenv('DATA_INGESTION_SERVICE_URL', 'http://data_ingestion_service:5001')
@@ -191,90 +378,135 @@ async def proxy_request_async(
     timeout: Optional[float] = None, # Allow overriding default client timeout
 ) -> FastAPIResponse:
     
-    service_url_base = SERVICE_URLS.get(service_name_key)
-    if not service_url_base:
-        logger.error(f"Service URL for '{service_name_key}' is not configured in API Gateway.")
-        # Return Pydantic model based error response
-        error_detail = ErrorDetail(code="SERVICE_NOT_CONFIGURED_GATEWAY", message=f"Service '{service_name_key}' not configured.")
-        return JSONResponse(status_code=503, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
-
-    target_url = str(service_url_base).rstrip('/') + path_suffix
-    breaker = SERVICE_BREAKERS[service_name_key]
-    http_client: httpx.AsyncClient = app.state.http_client
-
-    headers = {key: value for key, value in original_request.headers.items() if key.lower() != 'host'}
-    body_bytes = await original_request.body()
+    # Get the target service URL 
+    service_url = SERVICE_URLS.get(service_name_key)
+    if not service_url:
+        logger.error(f"Service URL for '{service_name_key}' is not configured.")
+        error_detail = ErrorDetail(
+            code="SERVICE_NOT_CONFIGURED", 
+            message=f"Service '{service_name_key}' is not properly configured in the API Gateway.",
+            target_service_url=None
+        )
+        # Track proxy request failure
+        prometheus_metrics.track_proxy_request(service_name_key, "error")
+        return JSONResponse(
+            status_code=500,
+            content=GatewayErrorResponse(
+                source="api_gateway",
+                error=error_detail
+            ).dict()
+        )
     
-    # Preserve original Content-Type if present, otherwise httpx might set its own based on content
-    if body_bytes and 'content-type' not in headers and original_request.headers.get('content-type'):
-         headers['content-type'] = original_request.headers['content-type']
-    elif body_bytes and 'content-type' not in headers: # If no content-type but body exists, default to json
-        headers['content-type'] = 'application/json'
-
-    logger.info(f"Proxying {original_request.method} to {target_url} for service '{service_name_key}' with timeout {timeout or http_client.timeout}")
-
+    # Ensure proper URL concatenation - strip any leading slash from path_suffix and ensure base URL has trailing slash
+    base_url = str(service_url).rstrip('/') + '/'
+    path = path_suffix.lstrip('/')
+    target_url = f"{base_url}{path}"
+    
+    logger.info(f"Proxying {original_request.method} to {target_url} for service '{service_name_key}' with timeout {timeout}")
+    
     try:
+        # Use the circuit breaker for the service
+        breaker = SERVICE_BREAKERS[service_name_key]
+
         @breaker
         async def make_request_inner_async(): 
-            response = await http_client.request(
+            request_body = await original_request.body() # Get the raw body bytes
+
+            headers_to_forward = dict(original_request.headers)
+            # Optionally filter out headers you don't want to proxy
+            # headers_to_forward.pop('host', None)
+
+            # Get the HTTP client from app state
+            http_client: httpx.AsyncClient = original_request.app.state.http_client
+            client_timeout = httpx.Timeout(timeout or http_client.timeout)
+
+            # Make the actual request to the target service
+            resp = await http_client.request(
                 method=original_request.method,
                 url=target_url,
-                headers=headers,
-                content=body_bytes,
-                params=original_request.query_params, # httpx.QueryParams or Dict
-                timeout=timeout # Uses specific timeout if provided, else client default
+                content=request_body, # Content expects bytes
+                headers=headers_to_forward,
+                timeout=client_timeout
             )
-            response.raise_for_status() 
-            return response
-
-        upstream_response = await make_request_inner_async()
-        return await optimize_response_async(upstream_response, original_request)
-
-    except pybreaker.CircuitBreakerError as e:
-        logger.error(f"Circuit breaker is OPEN for {service_name_key} at {target_url}: {e}")
-        error_detail = ErrorDetail(code="SERVICE_CIRCUIT_OPEN", message=f"Service {service_name_key} is temporarily unavailable (circuit open).", target_service_url=target_url, circuit_state=breaker.current_state.name)
-        return JSONResponse(status_code=503, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
-    
-    except httpx.ConnectError as e:
-        logger.error(f"Connection error to {target_url} ({service_name_key}): {e}")
-        error_detail = ErrorDetail(code="UPSTREAM_CONNECTION_ERROR", message=f"Cannot connect to {service_name_key}.", target_service_url=target_url, original_exception=str(e))
-        return JSONResponse(status_code=503, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
-    
-    except httpx.TimeoutException as e:
-        logger.error(f"Timeout connecting/requesting {target_url} ({service_name_key}): {e}")
-        error_detail = ErrorDetail(code="UPSTREAM_TIMEOUT", message=f"Request to {service_name_key} timed out.", target_service_url=target_url, original_exception=str(e))
-        return JSONResponse(status_code=504, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
-    
-    except httpx.HTTPStatusError as e: 
-        logger.error(f"HTTP error {e.response.status_code} from {target_url} ({service_name_key}). Response: {e.response.text[:500]}")
-        try:
-            error_content = e.response.json()
-            if isinstance(error_content, dict) and "error" in error_content and isinstance(error_content["error"], dict):
-                upstream_error_detail_dict = error_content["error"]
-                if "code" not in upstream_error_detail_dict or "message" not in upstream_error_detail_dict:
-                     upstream_error_detail_dict = {"code": f"UPSTREAM_ERROR_{e.response.status_code}", "message": json.dumps(error_content) }
-            elif isinstance(error_content, dict) and "detail" in error_content: 
-                upstream_error_detail_dict = {"code": f"UPSTREAM_ERROR_{e.response.status_code}", "message": str(error_content["detail"])}
-            else:
-                upstream_error_detail_dict = {"code": f"UPSTREAM_ERROR_{e.response.status_code}", "message": e.response.text[:200]}
             
-            # Ensure all required fields for ErrorDetail are present or defaulted
-            final_error_detail = ErrorDetail(
-                code=upstream_error_detail_dict.get("code", f"UPSTREAM_ERROR_{e.response.status_code}"),
-                message=upstream_error_detail_dict.get("message", "Unknown upstream error."),
-                target_service_url=target_url,
-                upstream_status_code=e.response.status_code
-            )
+            # Return the full response object for processing by optimize_response_async
+            return resp
 
-        except json.JSONDecodeError:
-            final_error_detail = ErrorDetail(code=f"UPSTREAM_ERROR_{e.response.status_code}", message=e.response.text[:200], target_service_url=target_url, upstream_status_code=e.response.status_code)
-        
-        return JSONResponse(status_code=e.response.status_code, content=GatewayErrorResponse(source="upstream", error=final_error_detail).dict())
+        # Execute the circuit-breaker-wrapped request
+        try:
+            upstream_response = await make_request_inner_async()
+            # Track successful proxy request
+            prometheus_metrics.track_proxy_request(service_name_key, "success")
+            # Now we have an httpx.Response from the upstream
+            logger.info(f"Response from {service_name_key} received with status {upstream_response.status_code}")
+            return await optimize_response_async(upstream_response, original_request)
+        except pybreaker.CircuitBreakerError as cb_error:
+            # The circuit is open due to previous failures
+            logger.error(f"Circuit breaker for {service_name_key} is open. Request blocked.")
+            # Track circuit breaker failure
+            prometheus_metrics.track_proxy_request(service_name_key, "circuit_open")
+            return JSONResponse(
+                status_code=503, # Service Unavailable is appropriate for circuit-breaker blocked requests
+                content=GatewayErrorResponse(
+                    source="api_gateway",
+                    error=ErrorDetail(
+                        code="CIRCUIT_BREAKER_OPEN",
+                        message=f"Service '{service_name_key}' is currently unavailable due to circuit breaker being open.",
+                        target_service_url=str(target_url),
+                        circuit_state="open"
+                    )
+                ).dict()
+            )
     
+    # Handle specific errors from httpx client
+    except httpx.TimeoutException as e:
+        logger.error(f"Timeout connecting to {service_name_key} at {target_url}: {e}")
+        # Track timeout failure
+        prometheus_metrics.track_proxy_request(service_name_key, "timeout")
+        return JSONResponse(
+            status_code=504, # Gateway Timeout
+            content=GatewayErrorResponse(
+                source="api_gateway",
+                error=ErrorDetail(
+                    code="UPSTREAM_TIMEOUT",
+                    message=f"Timeout connecting to service '{service_name_key}'.",
+                    target_service_url=str(target_url),
+                    original_exception=str(e)
+                )
+            ).dict()
+        )
+    except httpx.RequestError as e:
+        logger.error(f"Error connecting to {service_name_key} at {target_url}: {e}")
+        # Track connection failure
+        prometheus_metrics.track_proxy_request(service_name_key, "connection_error")
+        return JSONResponse(
+            status_code=502, # Bad Gateway
+            content=GatewayErrorResponse(
+                source="api_gateway",
+                error=ErrorDetail(
+                    code="UPSTREAM_CONNECTION_ERROR",
+                    message=f"Error connecting to service '{service_name_key}'.",
+                    target_service_url=str(target_url),
+                    original_exception=str(e)
+                )
+            ).dict()
+        )
     except Exception as e:
-        logger.error(f"Generic error proxying to {target_url} ({service_name_key}): {type(e).__name__} - {e}", exc_info=True)
-        error_detail = ErrorDetail(code="GATEWAY_PROXY_ERROR", message="An unexpected error occurred in the API Gateway while proxying.", original_exception=str(e))
-        return JSONResponse(status_code=500, content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict())
+        logger.error(f"Unexpected error proxying to {service_name_key} at {target_url}: {e}", exc_info=True)
+        # Track unexpected failure
+        prometheus_metrics.track_proxy_request(service_name_key, "unexpected_error")
+        return JSONResponse(
+            status_code=500, # Internal Server Error
+            content=GatewayErrorResponse(
+                source="api_gateway",
+                error=ErrorDetail(
+                    code="GATEWAY_UNEXPECTED_ERROR",
+                    message=f"Unexpected error in API Gateway while proxying to service '{service_name_key}'.",
+                    target_service_url=str(target_url),
+                    original_exception=str(e)
+                )
+            ).dict()
+        )
 
 # --- Routes ---
 # Note: For paths with path parameters like /api/v1/model/{model_name}/config
@@ -374,6 +606,85 @@ async def model_training_status_proxy():
 @app.get("/api/v1/status/portfolio-optimization", tags=["Service Status Proxy"], description="Checks health of Portfolio Optimization Service")
 async def portfolio_optimization_status_proxy():
     return await check_backend_service_health("portfolio_optimization", "Portfolio Optimization Service")
+
+# Add a system-wide health check endpoint that checks all services
+@app.get("/api/v1/system-status", tags=["System Status"], 
+         summary="Check health of all services", 
+         description="Returns health status for all microservices in the system")
+async def system_status_endpoint():
+    """
+    Check the health status of all services in the system.
+    
+    Returns:
+        dict: A dictionary containing the status of all services
+    """
+    services = ["data_ingestion", "model_training", "portfolio_optimization"]
+    result = {
+        "status": "success",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "services": {},
+        "overall_status": "healthy"
+    }
+    
+    for service_name in services:
+        try:
+            service_url_base = SERVICE_URLS.get(service_name)
+            if not service_url_base:
+                result["services"][service_name] = {
+                    "status": "unavailable",
+                    "reason": "URL not configured"
+                }
+                result["overall_status"] = "degraded"
+                continue
+                
+            health_target_url = str(service_url_base).rstrip('/') + "/health"
+            
+            # Check if circuit breaker is open
+            breaker = SERVICE_BREAKERS[service_name]
+            if hasattr(breaker.current_state, 'name') and breaker.current_state.name == 'open':
+                result["services"][service_name] = {
+                    "status": "unavailable",
+                    "reason": "circuit breaker open",
+                    "circuit_state": breaker.current_state.name
+                }
+                result["overall_status"] = "degraded"
+                continue
+                
+            # Make health check request
+            resp = await app.state.http_client.get(health_target_url, timeout=5.0)
+            if resp.status_code == 200:
+                health_data = resp.json()
+                result["services"][service_name] = {
+                    "status": "healthy",
+                    "response_time_ms": round(resp.elapsed.total_seconds() * 1000, 2),
+                    "details": health_data
+                }
+            else:
+                result["services"][service_name] = {
+                    "status": "unhealthy",
+                    "status_code": resp.status_code,
+                    "reason": "Non-200 response"
+                }
+                result["overall_status"] = "degraded"
+        except Exception as e:
+            result["services"][service_name] = {
+                "status": "error",
+                "reason": str(e)
+            }
+            result["overall_status"] = "degraded"
+    
+    # Check if any service is down
+    if all(service["status"] == "error" or service["status"] == "unavailable" 
+           for service in result["services"].values()):
+        result["overall_status"] = "critical"
+        
+    status_code = 200
+    if result["overall_status"] == "critical":
+        status_code = 503  # Service Unavailable
+    elif result["overall_status"] == "degraded":
+        status_code = 207  # Multi-Status
+        
+    return JSONResponse(content=result, status_code=status_code)
 
 # Comment out or remove old Flask app instantiation and routes for now
 # app = Flask(__name__)

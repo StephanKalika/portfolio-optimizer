@@ -1,13 +1,18 @@
-fastapi
-uvicorn[standard]
-pydantic
+fastapi==0.104.0
+uvicorn==0.23.2
+pydantic==2.4.2
 torch==2.0.1
-SQLAlchemy==1.4.27  # Or a more recent 1.x version, ensure compatibility
+SQLAlchemy==2.0.22
 psycopg2-binary==2.9.1 # For PostgreSQL connection
-pandas==1.3.5 # Added for data manipulation
-numpy==1.24.3 # Updated to newer version compatible with PyTorch 2.0.1
-scikit-learn==1.0.2 # For MinMaxScaler and train_test_split
+pandas==2.1.1
+numpy==1.26.0
+scikit-learn==1.3.1
 matplotlib==3.5.1 # For visualization if needed
-joblib==1.1.0 # For saving models and scalers
+joblib==1.3.2
+python-dotenv==1.0.0
+httpx==0.25.0
+psutil==5.9.5  # For system metrics monitoring
 # torchvision and torchaudio are often installed with PyTorch, but we might not need them explicitly yet.
-# We can add them if specific functionalities require them later. 
+# We can add them if specific functionalities require them later.
+prometheus-client==0.16.0
+psutil==5.9.5

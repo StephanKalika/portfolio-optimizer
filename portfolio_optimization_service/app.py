@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, HttpUrl
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import os
 import httpx # For async HTTP calls
 import pandas as pd
@@ -14,27 +14,170 @@ import io # Added for capturing DataFrame.info() output
 import logging # Use standard logging
 import json # Add this import for json.JSONDecodeError in health check
 import datetime # Add datetime module import to fix NameError
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+# Import Prometheus monitoring
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Histogram, Gauge, Summary, Info, CollectorRegistry
+import psutil
+import threading
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Portfolio Optimization Service", version="1.0.0")
+# Create FastAPI app with enhanced documentation
+app = FastAPI(
+    title="Portfolio Optimizer Optimization Service",
+    description="Service for optimizing portfolio weights based on model predictions and historical data",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    contact={
+        "name": "Portfolio Optimizer Team",
+        "url": "https://github.com/StephanKalika/portfolio-optimizer",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Add Prometheus metrics
+class PrometheusMetrics:
+    def __init__(self, app_name):
+        self.app_name = app_name
+        self.registry = CollectorRegistry()
+        
+        # Request metrics - simplify labels
+        self.request_counter = Counter(
+            f'{app_name}_http_requests_total',
+            'Total number of HTTP requests',
+            ['method', 'path', 'code'],
+            registry=self.registry
+        )
+        
+        # Request duration metrics - simplify labels
+        self.request_duration = Histogram(
+            f'{app_name}_http_request_duration_seconds',
+            'HTTP request duration in seconds',
+            ['method', 'path', 'code'],
+            registry=self.registry
+        )
+        
+        # System metrics
+        self.cpu_usage = Gauge(
+            f'{app_name}_cpu_usage_percent',
+            'Current CPU usage percentage',
+            registry=self.registry
+        )
+        
+        self.memory_usage = Gauge(
+            f'{app_name}_memory_usage_bytes',
+            'Current memory usage in bytes',
+            registry=self.registry
+        )
+        
+        # Service info
+        self.service_info = Info(
+            f'{app_name}_service_info',
+            'Information about the service',
+            registry=self.registry
+        )
+        self.service_info.info({
+            'version': os.environ.get('SERVICE_VERSION', 'unknown'),
+            'name': app_name
+        })
+        
+        # System metrics collection thread
+        self._metrics_thread = None
+        self._running = False
+    
+    def start_metrics_collection(self):
+        """Start collecting system metrics in a background thread"""
+        self._running = True
+        self._metrics_thread = threading.Thread(target=self._collect_system_metrics)
+        self._metrics_thread.daemon = True
+        self._metrics_thread.start()
+        
+    def _collect_system_metrics(self):
+        """Collect system metrics in a background thread"""
+        while self._running:
+            # Update CPU and memory metrics
+            self.cpu_usage.set(psutil.cpu_percent())
+            self.memory_usage.set(psutil.Process(os.getpid()).memory_info().rss)
+            time.sleep(15)  # Update every 15 seconds
+    
+    def track_request(self, method, endpoint, status_code, duration):
+        """Track an HTTP request with its duration"""
+        # Ensure all values are strings and use simplified label names
+        method_str = str(method)
+        path_str = str(endpoint)
+        code_str = str(status_code)
+        
+        self.request_counter.labels(method=method_str, path=path_str, code=code_str).inc()
+        self.request_duration.labels(method=method_str, path=path_str, code=code_str).observe(duration)
+    
+    def stop(self):
+        """Stop the metrics collection thread"""
+        self._running = False
+        if self._metrics_thread:
+            self._metrics_thread.join(timeout=1.0)
+
+class FastAPIPrometheusMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app: FastAPI, app_name: str = "fastapi_app"):
+        super().__init__(app)
+        self.app = app
+        self.app_name = app_name
+        self.metrics = PrometheusMetrics(app_name)
+        
+        # Start the system metrics collection
+        self.metrics.start_metrics_collection()
+    
+    async def dispatch(self, request: Request, call_next):
+        # Handle metrics endpoint directly in the middleware
+        if request.url.path == "/metrics":
+            return Response(
+                content=generate_latest(self.metrics.registry),
+                media_type=CONTENT_TYPE_LATEST
+            )
+            
+        # For other requests, track metrics
+        start_time = time.time()
+        response = await call_next(request)
+        request_time = time.time() - start_time
+        
+        # Track request metrics with the correct label names
+        self.metrics.track_request(
+            method=request.method,
+            endpoint=request.url.path,
+            status_code=str(response.status_code),
+            duration=request_time
+        )
+        
+        return response
+
+# Add Prometheus monitoring middleware
+app.add_middleware(
+    FastAPIPrometheusMiddleware,
+    app_name="portfolio_optimization_service"
+)
 
 # Configuration
 DATABASE_URL = os.getenv('DATABASE_URL')
-MODEL_TRAINING_SERVICE_URL_STR = os.getenv('MODEL_TRAINING_SERVICE_URL') # Get as string first
+MODEL_TRAINING_SERVICE_URL = os.getenv('MODEL_TRAINING_SERVICE_URL', 'http://model_training_service:8000')
 
-# Validate and parse MODEL_TRAINING_SERVICE_URL
-MODEL_TRAINING_SERVICE_URL: Optional[HttpUrl] = None
-if MODEL_TRAINING_SERVICE_URL_STR:
-    try:
-        MODEL_TRAINING_SERVICE_URL = HttpUrl(MODEL_TRAINING_SERVICE_URL_STR) 
-    except Exception as e: # Pydantic's HttpUrl might raise errors on invalid formats
-        logger.error(f"Invalid MODEL_TRAINING_SERVICE_URL format: {MODEL_TRAINING_SERVICE_URL_STR}. Error: {e}")
-        MODEL_TRAINING_SERVICE_URL = None # Explicitly set to None if invalid
-else:
-    logger.warning("MODEL_TRAINING_SERVICE_URL environment variable is not set.")
+# Initialize logger to show the current config
+logger.info(f"DATABASE_URL: {DATABASE_URL}")
+logger.info(f"MODEL_TRAINING_SERVICE_URL: {MODEL_TRAINING_SERVICE_URL}")
 
 db_engine = None
 

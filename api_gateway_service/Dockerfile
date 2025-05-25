@@ -1,7 +1,7 @@
 FROM python:3.9-slim
 
-# Install curl and ping for debugging network issues
-RUN apt-get update && apt-get install -y curl iputils-ping && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Install curl, ping, and build dependencies for psutil
+RUN apt-get update && apt-get install -y curl iputils-ping gcc python3-dev && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 

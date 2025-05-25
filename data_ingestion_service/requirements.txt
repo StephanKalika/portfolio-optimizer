@@ -1,12 +1,11 @@
-Flask==2.0.1
-Werkzeug==2.0.3
+fastapi==0.95.1
+uvicorn[standard]==0.22.0
 pandas==1.3.5
 numpy==1.21.6
 requests==2.26.0
 # alpha_vantage removed as it requires a premium subscription for our needs
-# yfinance removed as we are switching to Alpha Vantage
 psycopg2-binary==2.9.3
 SQLAlchemy==1.4.29
-gunicorn
-fastapi
-uvicorn[standard] 
+gunicorn==20.1.0
+prometheus-client==0.16.0
+psutil==5.9.5

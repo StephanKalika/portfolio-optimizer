@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Depends, Query, Response, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, exc as sa_exc
 from sqlalchemy.exc import SQLAlchemyError
 import time
 import pandas as pd
@@ -19,6 +19,9 @@ import json # For saving model config
 import logging
 import math
 import datetime
+from fastapi.middleware.cors import CORSMiddleware
+import traceback
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Histogram, Gauge, Summary, CollectorRegistry
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -30,12 +33,34 @@ logger.info(f"PyTorch version: {torch.__version__}")
 logger.info(f"Pandas version: {pd.__version__}")
 logger.info(f"Scikit-learn version: {sklearn.__version__}")
 
-app = FastAPI(title="Model Training Service", version="1.0.0",
-              description="Service for training time-series forecasting models.")
+app = FastAPI(
+    title="Portfolio Optimizer Model Training Service",
+    description="Service for training deep learning models (LSTM, GRU, Transformer) for stock price prediction",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    contact={
+        "name": "Portfolio Optimizer Team",
+        "url": "https://github.com/StephanKalika/portfolio-optimizer",
+    },
+    license_info={
+        "name": "MIT License",
+        "url": "https://opensource.org/licenses/MIT",
+    },
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configuration
 DATABASE_URL = os.getenv('DATABASE_URL')
-MODELS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'trained_models') # Save models inside the app directory for now
+MODELS_DIR = os.getenv("MODELS_DIR", "/app/trained_models")
 os.makedirs(MODELS_DIR, exist_ok=True)
 
 db_engine = None
@@ -880,10 +905,213 @@ async def list_models_endpoint():
         # Directly raise HTTPException for FastAPI to handle the response
         raise HTTPException(status_code=500, detail=error_detail.dict())
 
+# Create Prometheus metrics
+METRICS_REGISTRY = CollectorRegistry()
+MODEL_COUNT = Gauge('model_training_service_model_count', 'Number of trained models', registry=METRICS_REGISTRY)
+CPU_USAGE = Gauge('model_training_service_cpu_usage_percent', 'CPU usage percentage', registry=METRICS_REGISTRY)
+MEMORY_USAGE = Gauge('model_training_service_memory_usage_mb', 'Memory usage in MB', registry=METRICS_REGISTRY)
+DISK_USAGE = Gauge('model_training_service_disk_usage_mb', 'Disk usage in MB', registry=METRICS_REGISTRY)
+UPTIME = Gauge('model_training_service_uptime_seconds', 'Service uptime in seconds', registry=METRICS_REGISTRY)
+TRAIN_TIME = Gauge('model_training_service_average_train_time_seconds', 'Average model training time in seconds', registry=METRICS_REGISTRY)
+TRAIN_LOSS = Gauge('model_training_service_average_train_loss', 'Average model training loss', registry=METRICS_REGISTRY)
+TEST_LOSS = Gauge('model_training_service_average_test_loss', 'Average model test loss', registry=METRICS_REGISTRY)
+MODEL_TYPES = Gauge('model_training_service_model_types', 'Number of models by type', ['model_type'], registry=METRICS_REGISTRY)
+
+# Add HTTP request metrics
+HTTP_REQUESTS_TOTAL = Counter('model_training_service_http_requests_total', 'Total number of HTTP requests', ['method', 'path', 'code'], registry=METRICS_REGISTRY)
+HTTP_REQUEST_DURATION = Histogram('model_training_service_http_request_duration_seconds', 'HTTP request duration in seconds', ['method', 'path', 'code'], registry=METRICS_REGISTRY)
+
+# Add middleware to track request durations
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start_time = time.time()
+    
+    response = await call_next(request)
+    
+    # Calculate request duration
+    duration = time.time() - start_time
+    
+    # Get the route path or the raw path if no route matched
+    path = request.url.path
+    
+    # Track the request in Prometheus
+    HTTP_REQUESTS_TOTAL.labels(
+        method=request.method,
+        path=path,
+        code=response.status_code
+    ).inc()
+    
+    HTTP_REQUEST_DURATION.labels(
+        method=request.method,
+        path=path,
+        code=response.status_code
+    ).observe(duration)
+    
+    return response
+
+# Update metrics endpoint for Prometheus
+@app.get("/metrics", tags=["Monitoring"], 
+         summary="Get service metrics in Prometheus format", 
+         description="Returns metrics about the service in Prometheus format")
+async def metrics_endpoint():
+    """Get service metrics for monitoring in Prometheus format."""
+    # Update metrics values
+    try:
+        CPU_USAGE.set(get_cpu_usage())
+        MEMORY_USAGE.set(get_available_memory())
+        DISK_USAGE.set(get_disk_space())
+        UPTIME.set(get_service_uptime())
+        
+        # Model metrics
+        metrics = get_model_metrics()
+        MODEL_COUNT.set(metrics["total_trained_models"])
+        TRAIN_TIME.set(metrics["average_train_time_seconds"])
+        TRAIN_LOSS.set(metrics["average_train_loss"])
+        TEST_LOSS.set(metrics["average_test_loss"])
+        
+        # Reset model types and update
+        for model_type, count in metrics["model_types"].items():
+            MODEL_TYPES.labels(model_type=model_type).set(count)
+    except Exception as e:
+        logger.error(f"Error updating metrics: {e}")
+    
+    # Return metrics in Prometheus format
+    return Response(content=generate_latest(METRICS_REGISTRY), media_type=CONTENT_TYPE_LATEST)
+
+def get_available_memory():
+    """Get available system memory in MB."""
+    try:
+        import psutil
+        return round(psutil.virtual_memory().available / (1024 * 1024), 2)
+    except ImportError:
+        return -1
+
+def get_cpu_usage():
+    """Get CPU usage percentage."""
+    try:
+        import psutil
+        return round(psutil.cpu_percent(interval=0.1), 2)
+    except ImportError:
+        return -1
+    
+def get_disk_space():
+    """Get available disk space in MB."""
+    try:
+        import psutil
+        return round(psutil.disk_usage('/').free / (1024 * 1024), 2)
+    except ImportError:
+        return -1
+        
+def get_service_uptime():
+    """Get service uptime in seconds."""
+    global SERVICE_START_TIME
+    return round((datetime.datetime.now() - SERVICE_START_TIME).total_seconds(), 2)
+    
+def count_trained_models():
+    """Count the number of trained models."""
+    try:
+        count = 0
+        if os.path.exists(MODELS_DIR):
+            for model_group in os.listdir(MODELS_DIR):
+                model_group_path = os.path.join(MODELS_DIR, model_group)
+                if not os.path.isdir(model_group_path):
+                    continue
+                
+                # Check if there are any model files (*.pth)
+                for root, _, files in os.walk(model_group_path):
+                    for file in files:
+                        if file.endswith('.pth'):
+                            count += 1
+                            break  # Count each model group only once
+        return count
+    except Exception as e:
+        logger.error(f"Error counting models: {e}")
+        return -1
+        
+def get_model_metrics():
+    """Get metrics about trained models."""
+    try:
+        metrics = {
+            "model_types": {},
+            "average_train_time_seconds": 0,
+            "average_train_loss": 0,
+            "average_test_loss": 0,
+            "total_trained_models": 0
+        }
+        
+        total_time = 0
+        total_train_loss = 0
+        total_test_loss = 0
+        model_count = 0
+        
+        if os.path.exists(MODELS_DIR):
+            for model_group in os.listdir(MODELS_DIR):
+                model_group_path = os.path.join(MODELS_DIR, model_group)
+                if not os.path.isdir(model_group_path):
+                    continue
+                
+                # Try to load the config file
+                config_path = os.path.join(model_group_path, "config.json")
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, 'r') as f:
+                            config = json.load(f)
+                            
+                            # Count model types
+                            model_type = config.get("model_type", "unknown")
+                            if model_type in metrics["model_types"]:
+                                metrics["model_types"][model_type] += 1
+                            else:
+                                metrics["model_types"][model_type] = 1
+                                
+                    except Exception as e:
+                        logger.error(f"Error reading config file {config_path}: {e}")
+                
+                # Look for ticker-specific model data
+                for ticker_dir in os.listdir(model_group_path):
+                    ticker_path = os.path.join(model_group_path, ticker_dir)
+                    if not os.path.isdir(ticker_path):
+                        continue
+                        
+                    # Check if this is a trained model
+                    model_file = os.path.join(ticker_path, "model.pth")
+                    if not os.path.exists(model_file):
+                        continue
+                        
+                    model_count += 1
+                    
+                    # Try to get training metrics if available
+                    ticker_config_path = os.path.join(ticker_path, "config.json")
+                    if os.path.exists(ticker_config_path):
+                        try:
+                            with open(ticker_config_path, 'r') as f:
+                                ticker_config = json.load(f)
+                                if "train_time_seconds" in ticker_config:
+                                    total_time += ticker_config["train_time_seconds"]
+                                if "final_train_loss" in ticker_config:
+                                    total_train_loss += ticker_config["final_train_loss"]
+                                if "final_test_loss" in ticker_config:
+                                    total_test_loss += ticker_config["final_test_loss"]
+                        except Exception as e:
+                            logger.error(f"Error reading ticker config file {ticker_config_path}: {e}")
+        
+        if model_count > 0:
+            metrics["average_train_time_seconds"] = round(total_time / model_count, 2)
+            metrics["average_train_loss"] = round(total_train_loss / model_count, 6)
+            metrics["average_test_loss"] = round(total_test_loss / model_count, 6)
+            metrics["total_trained_models"] = model_count
+            
+        return metrics
+    except Exception as e:
+        logger.error(f"Error getting model metrics: {e}")
+        return {"error": str(e)}
+
+# Record service start time for uptime tracking
+SERVICE_START_TIME = datetime.datetime.now()
 
 # To run the app (for local development):
 # uvicorn app:app --reload --port 8000
 # The Dockerfile will use a similar command without --reload.
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5002, debug=True) 
+    app.run(host='0.0.0.0', port=8000, debug=True) 
