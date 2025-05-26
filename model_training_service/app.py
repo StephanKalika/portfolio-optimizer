@@ -65,6 +65,12 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 
 db_engine = None
 
+# Global variables
+SERVICE_START_TIME = datetime.datetime.now()
+
+# Dictionary to store training progress
+training_progress = {}
+
 def initialize_db_engine(retries=5, delay=5):
     global db_engine
     if not DATABASE_URL:
@@ -161,7 +167,7 @@ class TrainRequest(BaseModel):
     model_name: str = Field(..., example="market_predictor_20240115_AAPL_MSFT", description="A unique name for the trained model group.")
     tickers: List[str] = Field(..., min_length=1, example=["AAPL", "MSFT"], description="List of ticker symbols to train models for.")
     start_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", example="2020-01-01", description="Start date for training data (YYYY-MM-DD).")
-    end_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", example="2023-01-01", description="End date for training data (YYYY-MM-DD).")
+    end_date: str = Field(..., pattern=r"^\d{4}-\d{2}-\d{2}$", example="2023-01-01", description="End date for training data (YYYY-MM-DD). Can be a future date, but will only use data up to the current date.")
     model_type: str = Field(default="lstm", example="lstm", description="Type of model (lstm, gru, transformer, wavenet).")
     sequence_length: int = Field(default=60, ge=10, le=365, description="Number of past data points to use for predicting the next point.")
     epochs: int = Field(default=50, ge=1, le=1000, description="Number of training epochs.")
@@ -446,6 +452,12 @@ async def train_model_endpoint(request: TrainRequest = Body(...)):
     try:
         start_dt = datetime.datetime.strptime(request.start_date, "%Y-%m-%d").date()
         end_dt = datetime.datetime.strptime(request.end_date, "%Y-%m-%d").date()
+        
+        # Fix: Check if the end date is in the future and handle appropriately
+        today = datetime.datetime.now().date()
+        if end_dt > today:
+            logger.warning(f"End date {request.end_date} is in the future. This is allowed but may result in limited data.")
+            
         if start_dt >= end_dt:
             raise ValueError("Start date must be before end date.")
     except ValueError as e:
@@ -487,9 +499,15 @@ async def train_model_endpoint(request: TrainRequest = Body(...)):
         try:
             logger.info(f"Fetching data for {ticker_symbol} from {request.start_date} to {request.end_date}...")
             fetch_start_time = time.time()
+            
+            # Adjust the end date for the database query to not exceed today's date
+            today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+            query_end_date = min(request.end_date, today_str)
+            logger.info(f"Using query end date: {query_end_date} (original: {request.end_date})")
+            
             query_sql = text("SELECT date, adj_close FROM stock_prices WHERE ticker = :ticker AND date >= :start_date AND date <= :end_date ORDER BY date ASC")
             with db_engine.connect() as conn:
-                df_ticker = pd.read_sql_query(query_sql, conn, params={"ticker": ticker_symbol, "start_date": request.start_date, "end_date": request.end_date})
+                df_ticker = pd.read_sql_query(query_sql, conn, params={"ticker": ticker_symbol, "start_date": request.start_date, "end_date": query_end_date})
             ticker_log_data["fetch_time_seconds"] = round(time.time() - fetch_start_time, 2)
             logger.info(f"Data fetched for {ticker_symbol}: {len(df_ticker)} rows in {ticker_log_data['fetch_time_seconds']:.2f}s.")
             ticker_log_data["dataset_size_total"] = len(df_ticker)
@@ -550,6 +568,17 @@ async def train_model_endpoint(request: TrainRequest = Body(...)):
             train_start_time = time.time()
             epoch_train_losses = []
             epoch_test_losses = [] # Store test loss per epoch
+            
+            # Initialize progress tracking for this ticker
+            update_training_progress(
+                request.model_name,
+                ticker_symbol,
+                "training",
+                0.0,
+                message=f"Starting training with {request.epochs} epochs",
+                total_epochs=request.epochs,
+                current_epoch=0
+            )
 
             for epoch in range(request.epochs):
                 model.train()
@@ -573,6 +602,18 @@ async def train_model_endpoint(request: TrainRequest = Body(...)):
                         current_test_loss_val = criterion(y_test_pred, y_test_tensor).item()
                         epoch_test_losses.append(current_test_loss_val)
                 
+                # Update progress for this ticker based on epoch
+                progress_value = min(0.95, (epoch + 1) / request.epochs)
+                update_training_progress(
+                    request.model_name,
+                    ticker_symbol,
+                    "training",
+                    progress_value,
+                    message=f"Epoch {epoch+1}/{request.epochs} - Train Loss: {avg_epoch_train_loss:.6f}",
+                    total_epochs=request.epochs,
+                    current_epoch=epoch+1
+                )
+                
                 if (epoch + 1) % max(1, request.epochs // 10) == 0 or epoch == request.epochs - 1:
                     log_msg = f"Epoch {epoch+1}/{request.epochs} for {ticker_symbol} - Train Loss: {avg_epoch_train_loss:.6f}"
                     if not math.isnan(current_test_loss_val):
@@ -592,6 +633,17 @@ async def train_model_endpoint(request: TrainRequest = Body(...)):
             joblib.dump(scaler, ticker_scaler_path)
             logger.info(f"Model saved to: {ticker_model_path}")
             logger.info(f"Scaler saved to: {ticker_scaler_path}")
+            
+            # Update progress to completed
+            update_training_progress(
+                request.model_name,
+                ticker_symbol,
+                "completed",
+                1.0,
+                message=f"Training completed successfully. Final train loss: {final_train_loss_str}",
+                total_epochs=request.epochs,
+                current_epoch=request.epochs
+            )
             
             ticker_log_data.update({
                 "status": "success", 
@@ -629,8 +681,38 @@ async def train_model_endpoint(request: TrainRequest = Body(...)):
         with open(model_group_config_path, 'w') as f_cfg:
             json.dump(model_group_config, f_cfg, indent=4, sort_keys=True)
         logger.info(f"Global model group config saved to: {model_group_config_path}")
+        
+        # Create a final progress file for the completed training
+        final_progress = {
+            "overall_progress": 1.0,
+            "tickers": {},
+            "start_time": datetime.datetime.fromtimestamp(os.path.getctime(model_group_dir)).isoformat(),
+            "last_update": datetime.datetime.now().isoformat(),
+            "status": overall_training_status,
+            "message": f"Training process completed with status: {overall_training_status}"
+        }
+        
+        # Add ticker-specific progress information
+        for ticker, ticker_log in training_summary.items():
+            final_progress["tickers"][ticker] = {
+                "progress": 1.0 if ticker_log.status == "success" else 0.0,
+                "stage": "completed" if ticker_log.status == "success" else "error",
+                "message": ticker_log.message,
+                "total_epochs": request.epochs,
+                "current_epoch": request.epochs if ticker_log.status == "success" else 0
+            }
+        
+        # Save the progress file
+        progress_file_path = os.path.join(model_group_dir, "training_progress.json")
+        with open(progress_file_path, 'w') as f_prog:
+            json.dump(final_progress, f_prog, indent=2)
+        logger.info(f"Final training progress saved to: {progress_file_path}")
+        
+        # Update the global training_progress dictionary
+        training_progress[request.model_name] = final_progress
+        
     except Exception as e:
-        logger.error(f"Failed to save global model group config '{model_group_config_path}': {e}", exc_info=True)
+        logger.error(f"Failed to save global model group config or progress '{model_group_config_path}': {e}", exc_info=True)
         if overall_training_status == "completed":
             overall_training_status = "completed_with_errors" 
 
@@ -1106,8 +1188,192 @@ def get_model_metrics():
         logger.error(f"Error getting model metrics: {e}")
         return {"error": str(e)}
 
-# Record service start time for uptime tracking
-SERVICE_START_TIME = datetime.datetime.now()
+# Add endpoint to get the training progress
+@app.get("/model/training-progress/{model_name}", tags=["Model Training"], 
+         summary="Get the current progress of a model training task")
+async def get_training_progress(model_name: str):
+    """
+    Get the current progress of a model training task.
+    
+    Args:
+        model_name: The name of the model to check progress for
+        
+    Returns:
+        JSON response with the training progress information
+    """
+    global training_progress
+    logger.info(f"Progress check for model: {model_name}. Available models: {list(training_progress.keys())}")
+    
+    # First check if we have the progress in memory
+    if model_name not in training_progress:
+        # Try to load from file
+        file_progress = load_progress_from_file(model_name)
+        if file_progress:
+            training_progress[model_name] = file_progress
+            logger.info(f"Loaded progress from file for {model_name}: {file_progress.get('status', 'unknown')}")
+    
+    # If still not found in memory or file, check the filesystem
+    if model_name not in training_progress:
+        # For models being trained by the async worker, check if they exist in the models directory
+        model_dir = os.path.join(MODELS_DIR, model_name)
+        model_exists = os.path.exists(model_dir)
+        
+        if model_exists:
+            # Check for tickers subdirectories to determine progress
+            tickers = []
+            completion_count = 0
+            
+            for item in os.listdir(model_dir):
+                item_path = os.path.join(model_dir, item)
+                if os.path.isdir(item_path) and item not in ['__pycache__']:
+                    tickers.append(item)
+                    # Check if model.pth exists (training completed for this ticker)
+                    model_file = os.path.join(item_path, "model.pth")
+                    if os.path.exists(model_file):
+                        completion_count += 1
+            
+            if tickers:
+                progress_value = completion_count / len(tickers) if tickers else 0
+                
+                # Create a progress entry based on filesystem state
+                training_progress[model_name] = {
+                    "overall_progress": progress_value,
+                    "tickers": {},
+                    "start_time": datetime.datetime.fromtimestamp(os.path.getctime(model_dir)).isoformat(),
+                    "last_update": datetime.datetime.now().isoformat(),
+                    "status": "completed" if progress_value >= 1.0 else "in_progress",
+                    "message": f"Training {'completed' if progress_value >= 1.0 else 'in progress'} ({completion_count}/{len(tickers)} tickers)"
+                }
+                
+                # Add ticker-specific details
+                for ticker in tickers:
+                    ticker_dir = os.path.join(model_dir, ticker)
+                    model_file = os.path.join(ticker_dir, "model.pth")
+                    ticker_completed = os.path.exists(model_file)
+                    
+                    training_progress[model_name]["tickers"][ticker] = {
+                        "progress": 1.0 if ticker_completed else 0.5,
+                        "stage": "completed" if ticker_completed else "training",
+                        "message": "Training completed" if ticker_completed else "Training in progress",
+                        "total_epochs": 0,  # We don't know this from filesystem
+                        "current_epoch": 0  # We don't know this from filesystem
+                    }
+                
+                logger.info(f"Created progress entry for {model_name} based on filesystem state: {training_progress[model_name]['overall_progress']:.2f}")
+                
+                # Save this progress to file for future reference
+                save_progress_to_file(model_name)
+            else:
+                # Directory exists but no tickers yet - just initialized
+                training_progress[model_name] = {
+                    "overall_progress": 0.1,
+                    "tickers": {},
+                    "start_time": datetime.datetime.fromtimestamp(os.path.getctime(model_dir)).isoformat(),
+                    "last_update": datetime.datetime.now().isoformat(),
+                    "status": "initializing",
+                    "message": "Model directory created, waiting for ticker data"
+                }
+        else:
+            # Model doesn't exist in filesystem, create a waiting entry
+            training_progress[model_name] = {
+                "overall_progress": 0.0,
+                "tickers": {},
+                "start_time": datetime.datetime.now().isoformat(),
+                "last_update": datetime.datetime.now().isoformat(),
+                "status": "queued",
+                "message": "Training job queued, waiting to start"
+            }
+            logger.info(f"Created new progress entry for queued model: {model_name}")
+    
+    return {
+        "status": "success",
+        "data": training_progress[model_name],
+        "message": f"Training progress for model: {model_name}"
+    }
+
+def update_training_progress(model_name, ticker, stage, progress_value, message=None, total_epochs=None, current_epoch=None):
+    """Update the training progress for a specific model and ticker."""
+    global training_progress
+    if model_name not in training_progress:
+        training_progress[model_name] = {
+            "overall_progress": 0.0,
+            "tickers": {},
+            "start_time": datetime.datetime.now().isoformat(),
+            "last_update": datetime.datetime.now().isoformat(),
+            "status": "in_progress",
+            "message": "Training started"
+        }
+    
+    # Update ticker-specific progress
+    if ticker not in training_progress[model_name]["tickers"]:
+        training_progress[model_name]["tickers"][ticker] = {
+            "progress": 0.0,
+            "stage": "preparing",
+            "message": "Initializing",
+            "total_epochs": total_epochs,
+            "current_epoch": 0
+        }
+    
+    ticker_data = training_progress[model_name]["tickers"][ticker]
+    ticker_data["progress"] = progress_value
+    ticker_data["stage"] = stage
+    
+    if message:
+        ticker_data["message"] = message
+    
+    if total_epochs is not None:
+        ticker_data["total_epochs"] = total_epochs
+    
+    if current_epoch is not None:
+        ticker_data["current_epoch"] = current_epoch
+    
+    # Calculate overall progress as average of ticker progress
+    tickers_progress = [t["progress"] for t in training_progress[model_name]["tickers"].values()]
+    training_progress[model_name]["overall_progress"] = sum(tickers_progress) / len(tickers_progress) if tickers_progress else 0.0
+    training_progress[model_name]["last_update"] = datetime.datetime.now().isoformat()
+    
+    # If all tickers have 100% progress, mark the model as complete
+    if all(t["progress"] >= 1.0 for t in training_progress[model_name]["tickers"].values()):
+        training_progress[model_name]["status"] = "completed"
+        training_progress[model_name]["message"] = "Training completed successfully"
+    
+    # Save progress to file for persistence between processes
+    save_progress_to_file(model_name)
+
+def save_progress_to_file(model_name):
+    """Save training progress to a file for persistence between processes."""
+    global training_progress
+    if model_name not in training_progress:
+        return
+    
+    try:
+        # Create the model directory if it doesn't exist
+        model_dir = os.path.join(MODELS_DIR, model_name)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Save progress to a JSON file
+        progress_file = os.path.join(model_dir, "training_progress.json")
+        with open(progress_file, 'w') as f:
+            json.dump(training_progress[model_name], f, indent=2)
+        
+        logger.debug(f"Saved progress to file: {progress_file}")
+    except Exception as e:
+        logger.error(f"Error saving progress to file for {model_name}: {e}")
+
+def load_progress_from_file(model_name):
+    """Load training progress from file."""
+    try:
+        progress_file = os.path.join(MODELS_DIR, model_name, "training_progress.json")
+        if os.path.exists(progress_file):
+            with open(progress_file, 'r') as f:
+                progress_data = json.load(f)
+                
+            logger.info(f"Loaded progress from file for {model_name}")
+            return progress_data
+    except Exception as e:
+        logger.error(f"Error loading progress from file for {model_name}: {e}")
+    
+    return None
 
 # To run the app (for local development):
 # uvicorn app:app --reload --port 8000

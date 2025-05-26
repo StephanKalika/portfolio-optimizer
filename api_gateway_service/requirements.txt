@@ -1,8 +1,13 @@
 fastapi
 uvicorn[standard]
-pydantic
-httpx # For async requests to backend services
+pydantic>=1.8.2
+httpx>=0.21.0
 pybreaker>=0.6.0
 msgpack>=1.0.4
-prometheus-client==0.16.0
-psutil==5.9.5
+prometheus-client>=0.11.0
+psutil>=5.8.0
+circuitbreaker>=1.3.2
+requests>=2.25.1
+prometheus-fastapi-instrumentator>=5.7.1
+pika>=1.2.0
+aio-pika>=7.2.0

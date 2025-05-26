@@ -36,12 +36,31 @@ services:
     ports:
       - "5002:8000"
     volumes:
-      - ./model_training_service:/app
-      - trained_models_data:/app/trained_models # Persist trained models
+      - trained_models_data:/app/trained_models
     environment:
+      - PYTHONUNBUFFERED=1
       - DATABASE_URL=postgresql://stockuser:stockpassword@db:5432/stockdata
     depends_on:
       - db
+    networks:
+      - portfolio_network
+
+  # Model Training Worker - processes tasks from RabbitMQ
+  model_training_worker:
+    build: ./model_training_service
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SERVICE_MODE=worker
+      - MODEL_TRAINING_SERVICE_URL=http://model_training_service:8000
+      - RABBITMQ_HOST=rabbitmq
+      - DATABASE_URL=postgresql://stockuser:stockpassword@db:5432/stockdata
+    volumes:
+      - trained_models_data:/app/trained_models
+      - ./shared_modules:/app/shared_modules
+    depends_on:
+      - db
+      - rabbitmq
+      - model_training_service
     networks:
       - portfolio_network
 
@@ -66,6 +85,7 @@ services:
       - "8000:5000"
     volumes:
       - ./api_gateway_service:/app
+      - ./shared_modules:/app/shared_modules
     environment:
       - DATA_INGESTION_SERVICE_URL=http://data_ingestion_service:5001
       - MODEL_TRAINING_SERVICE_URL=http://model_training_service:8000
@@ -140,6 +160,26 @@ services:
     networks:
       - portfolio_network
 
+  # Message Queue Service - RabbitMQ
+  rabbitmq:
+    image: rabbitmq:3-management
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"   # AMQP protocol port
+      - "15672:15672" # Management UI port
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - portfolio_network
+
 networks:
   portfolio_network:
     driver: bridge
@@ -147,4 +187,7 @@ networks:
 volumes:
   postgres_data: # Defines the named volume for data persistence
   trained_models_data: {} # Defines the named volume for trained models
-  prometheus_data: {} # Defines the named volume for Prometheus data 
+  prometheus_data: {} # Defines the named volume for Prometheus data
+  db_data:
+  pgadmin_data:
+  rabbitmq_data: 

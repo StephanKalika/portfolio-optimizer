@@ -5,17 +5,20 @@ RUN apt-get update && apt-get install -y curl iputils-ping gcc python3-dev && ap
 
 WORKDIR /app
 
-COPY requirements.txt requirements.txt
+COPY ./requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Explicitly install aio-pika
+RUN pip install aio-pika
+
+# Copy shared modules (don't install as editable, just use them directly)
+COPY ./shared_modules /app/shared_modules
 
 COPY . /app
 
-# Remove Flask-specific ENV vars
-# ENV FLASK_APP=app.py
-# ENV FLASK_RUN_HOST=0.0.0.0
-
 # Good practice for containerized Python apps
 ENV PYTHONUNBUFFERED=1 
+ENV PYTHONPATH=/app
 
 # Port for the gateway itself
 EXPOSE 5000 

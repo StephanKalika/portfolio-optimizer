@@ -479,7 +479,7 @@ def get_historical_returns_and_covariance(assets, start_date, end_date):
         ORDER BY ticker, date ASC;
     """)
     with db_engine.connect() as connection:
-        result = connection.execute(query, tickers=assets, start_date=start_date, end_date=end_date)
+        result = connection.execute(query, {"tickers": assets, "start_date": start_date, "end_date": end_date})
         df = pd.DataFrame(result.fetchall(), columns=result.keys())
     
     logger.info(f"Inside get_historical_returns_and_covariance for assets: {assets}")

@@ -17,6 +17,14 @@ import datetime
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, Counter, Histogram, Gauge, Summary, Info, CollectorRegistry
 import psutil
 import threading
+import uuid
+from enum import Enum
+from shared_modules.message_queue.rabbitmq import AsyncRabbitMQClient
+from shared_modules.message_queue.model_tasks import (
+    ModelTrainingTask,
+    TaskType,
+    submit_model_training_task,
+)
 
 # Configure logging (FastAPI uses uvicorn logging by default, but good to have a logger instance)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -537,7 +545,75 @@ async def model_list_proxy(request: Request):
 
 @app.post("/api/v1/model/train", tags=["Model Training Proxy"], description="Proxies to Model Training Service: /model/train")
 async def model_train_proxy(request: Request):
-    return await proxy_request_async("model_training", request, path_suffix="/model/train", timeout=3600) 
+    return await proxy_request_async("model_training", request, path_suffix="/model/train", timeout=3600)
+
+@app.get("/api/v1/model/training-progress/{model_name}", tags=["Model Training Proxy"], description="Proxies to Model Training Service: /model/training-progress/{model_name}")
+async def model_training_progress_proxy(request: Request, model_name: str):
+    return await proxy_request_async("model_training", request, path_suffix=f"/model/training-progress/{model_name}")
+
+# New endpoint for async model training using RabbitMQ
+@app.post("/api/v1/model/train/async", tags=["Model Training Async"], 
+          description="Submits model training request to queue for async processing")
+async def model_train_async(request: Request):
+    """
+    Submit a model training task to be processed asynchronously via RabbitMQ.
+    
+    Returns the task ID which can be used to check the status of the training job.
+    """
+    prometheus_metrics.track_proxy_request("model_training", "queue_submit")
+    
+    try:
+        # Parse request body
+        request_data = await request.json()
+        logger.info(f"Received async model training request: {request_data}")
+        
+        # Create a task object
+        task = ModelTrainingTask(
+            task_type=TaskType.TRAIN_MODEL,
+            task_id=str(uuid.uuid4()),
+            tickers=request_data.get("tickers", []),
+            model_name=request_data.get("model_name", ""),
+            start_date=request_data.get("start_date", ""),
+            end_date=request_data.get("end_date", ""),
+            model_type=request_data.get("model_type", "lstm"),
+            sequence_length=request_data.get("sequence_length", 60),
+            epochs=request_data.get("epochs", 50),
+            hidden_layer_size=request_data.get("hidden_layer_size", 50),
+            num_layers=request_data.get("num_layers", 2),
+            learning_rate=request_data.get("learning_rate", 0.001),
+            batch_size=request_data.get("batch_size", 32),
+            test_split_size=request_data.get("test_split_size", 0.2),
+            additional_params=request_data.get("additional_params", {}),
+        )
+        
+        # Submit the task to the queue
+        task_id = await submit_model_training_task(task)
+        
+        return JSONResponse(
+            content={
+                "status": "success",
+                "message": "Model training task submitted to queue successfully",
+                "data": {
+                    "task_id": task_id,
+                    "task_type": task.task_type,
+                    "model_name": task.model_name,
+                    "tickers": task.tickers,
+                    "status": task.status,
+                    "created_at": task.created_at,
+                }
+            },
+            status_code=202  # Accepted
+        )
+    except Exception as e:
+        logger.error(f"Error submitting async model training task: {e}", exc_info=True)
+        error_detail = ErrorDetail(
+            code="ASYNC_MODEL_TRAINING_ERROR", 
+            message=f"Error submitting model training task: {str(e)}"
+        )
+        return JSONResponse(
+            status_code=500, 
+            content=GatewayErrorResponse(source="api_gateway", error=error_detail).dict()
+        )
 
 @app.post("/api/v1/model/predict", tags=["Model Training Proxy"], description="Proxies to Model Training Service: /model/predict")
 async def model_predict_proxy(request: Request):
@@ -736,6 +812,37 @@ async def system_status_endpoint():
         status_code = 207  # Multi-Status
         
     return JSONResponse(content=result, status_code=status_code)
+
+# New endpoint for checking task status
+@app.get("/api/v1/tasks/{task_id}/status", tags=["Task Status"], 
+         description="Check the status of an asynchronous task")
+async def check_task_status(task_id: str):
+    """
+    Check the status of an asynchronous task by its ID.
+    
+    Currently, this is a placeholder endpoint that will be implemented
+    with a database to track task status.
+    
+    Args:
+        task_id: The ID of the task to check.
+        
+    Returns:
+        JSON response with the task status information.
+    """
+    # This is a placeholder implementation.
+    # In a real implementation, we would query a database or Redis to get the task status.
+    return JSONResponse(
+        content={
+            "status": "success",
+            "data": {
+                "task_id": task_id,
+                "status": "pending",  # This would be fetched from storage in a real implementation
+                "message": "Task status check functionality is under development.",
+                "info": "In a full implementation, this would return real-time status of the task."
+            }
+        },
+        status_code=200
+    )
 
 # Comment out or remove old Flask app instantiation and routes for now
 # app = Flask(__name__)

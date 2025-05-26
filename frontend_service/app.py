@@ -5,8 +5,13 @@ import datetime
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import numpy as np
 import re
+import time
+
+# Set a default template for better looking plots
+pio.templates.default = "plotly_white"
 
 # API Gateway base URL from environment variable
 # This should match the value set in docker-compose.yml: http://api_gateway_service:5000
@@ -35,6 +40,10 @@ if 'num_epochs' not in st.session_state:
     st.session_state['num_epochs'] = 50
 if 'risk_free_rate' not in st.session_state:
     st.session_state['risk_free_rate'] = 0.02
+if 'last_training_result' not in st.session_state:
+    st.session_state['last_training_result'] = None
+if 'training_in_progress' not in st.session_state:
+    st.session_state['training_in_progress'] = False
 
 # Function to suggest tickers as user types
 def suggest_tickers(input_text):
@@ -278,6 +287,54 @@ elif page == "Model Training":
     st.header("Model Training Service")
     st.write("Train time-series prediction models for selected tickers using data from the database.")
     st.info("ℹ️ Model training can be a time-consuming process, especially with many epochs or large datasets. Please be patient after submitting.")
+    
+    # Display last training result if available
+    if st.session_state.get('last_training_result'):
+        result = st.session_state['last_training_result']
+        completion_time = datetime.datetime.fromtimestamp(result['completion_time'])
+        
+        with st.expander("📊 Last Training Result", expanded=True):
+            if result['status'] == 'completed':
+                st.success(f"✅ Model '{result['model_name']}' training completed successfully!")
+                st.write(f"**Tickers:** {', '.join(result['tickers'])}")
+                st.write(f"**Completed at:** {completion_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                
+                # Show training results if available
+                if 'response_data' in result and 'data' in result['response_data']:
+                    data = result['response_data']['data']
+                    
+                    # Show overall message
+                    if 'overall_message' in data:
+                        st.write(f"**Summary:** {data['overall_message']}")
+                    
+                    # Show per-ticker results
+                    if 'training_summary_per_ticker' in data:
+                        ticker_summary = data['training_summary_per_ticker']
+                        st.write("**Results per Ticker:**")
+                        for ticker, summary in ticker_summary.items():
+                            status = summary.get('status', 'unknown')
+                            message = summary.get('message', 'No message')
+                            if status == 'success':
+                                st.write(f"  • {ticker}: ✅ {message}")
+                            else:
+                                st.write(f"  • {ticker}: ❌ {message}")
+                
+                if st.button("🗑️ Clear Result", key="clear_training_result"):
+                    st.session_state['last_training_result'] = None
+                    st.rerun()
+                    
+            elif result['status'] == 'timeout':
+                st.warning(f"⏱️ Training for model '{result['model_name']}' timed out")
+                st.write(f"**Tickers:** {', '.join(result['tickers'])}")
+                st.write(f"**Last checked at:** {completion_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                st.info("The model may still be training in the background. You can check its status manually.")
+                
+                if st.button("🔍 Try Training Again", key="retry_training"):
+                    st.info("Please submit a new training request above.")
+                
+                if st.button("🗑️ Clear Result", key="clear_timeout_result"):
+                    st.session_state['last_training_result'] = None
+                    st.rerun()
 
     default_end_date_train = datetime.date.today()
     default_start_date_train = default_end_date_train - datetime.timedelta(days=3*365) # Approx 3 years back
@@ -292,7 +349,9 @@ elif page == "Model Training":
                     st.subheader(f"Model: {model_name}")
                     st.write(f"Tickers: {', '.join(model_data.get('tickers', []))}")
                     st.write(f"Created: {model_data.get('creation_date', 'Unknown')}")
-                    with st.expander("Configuration Details"):
+                    
+                    # Replace the inner expander with a collapsible container
+                    if st.button(f"Show Config Details for {model_name}", key=f"config_{model_name}"):
                         st.json(model_data.get('ticker_details', {}))
             else:
                 st.info("No existing models found or could not fetch model list.")
@@ -425,46 +484,75 @@ elif page == "Model Training":
                 payload["nhead"] = nhead
             
             st.write("Sending training request to API Gateway...")
+            
+            # Mark training as in progress and clear any previous results
+            st.session_state['training_in_progress'] = True
+            st.session_state['last_training_result'] = None
+            
             with st.spinner(f"Training {model_type.upper()} model(s) for {train_tickers_input} with model name {model_name}. This may take a while..."):
                 st.json(payload) # Show what's being sent
                 try:
+                    # Use the direct training endpoint for reliable results
                     train_url = f"{API_GATEWAY_BASE_URL}/api/v1/model/train"
-                    # Model training can take very long, use a very long timeout
-                    # The API gateway itself has a 900s timeout for this route.
-                    # Streamlit request should be slightly less to allow gateway to respond if it times out.
-                    response = requests.post(train_url, json=payload, timeout=600) 
+                    response = requests.post(train_url, json=payload, timeout=1800)  # 30 minutes timeout for training
                     
                     if response.status_code == 200 or response.status_code == 201:
                         response_data = response.json()
-                        st.success(response_data.get("message", "Model training submitted successfully!"))
-                        if "results" in response_data:
-                            st.write("Training Results:")
-                            training_results = []
-                            for result in response_data["results"]:
-                                st.subheader(f"Ticker: {result['ticker']}")
-                                st.text(f"Status: {result['status']}")
-                                if "message" in result: st.info(result["message"])
-                                if "model_path" in result: st.text(f"Model saved to: {result['model_path']}")
-                                if "scaler_path" in result: st.text(f"Scaler saved to: {result['scaler_path']}")
-                                if "config_path" in result: st.text(f"Config saved to: {result['config_path']}")
-                                
-                                # Collect metrics for visualization if available
-                                if "test_loss" in result:
-                                    st.metric(label="Test MSE Loss", value=f"{result['test_loss']:.6f}")
-                                    training_results.append({
-                                        "ticker": result['ticker'],
-                                        "test_loss": result['test_loss']
-                                    })
+                        st.success("✅ Model training completed successfully!")
+                        
+                        # Store the training results in session state
+                        st.session_state['last_training_result'] = {
+                            'model_name': model_name,
+                            'tickers': train_tickers_list,
+                            'completion_time': time.time(),
+                            'response_data': response_data,
+                            'status': 'completed'
+                        }
+                        st.session_state['training_in_progress'] = False
+                        
+                        # Display training results
+                        if "data" in response_data:
+                            data = response_data["data"]
                             
-                            # Create a simple bar chart of test loss values if available
-                            if training_results:
-                                df_results = pd.DataFrame(training_results)
-                                if not df_results.empty and 'test_loss' in df_results.columns:
-                                    st.subheader("Test Loss by Ticker")
-                                    fig = px.bar(df_results, x='ticker', y='test_loss', 
-                                                title='Model Test Loss (MSE) by Ticker',
-                                                labels={'ticker': 'Ticker', 'test_loss': 'Test MSE Loss'})
-                                    st.plotly_chart(fig)
+                            # Show overall status
+                            overall_status = data.get("status_overall", "unknown")
+                            overall_message = data.get("overall_message", "Training completed")
+                            st.info(f"**Status:** {overall_status}")
+                            st.info(f"**Summary:** {overall_message}")
+                            
+                            # Show per-ticker results
+                            if "training_summary_per_ticker" in data:
+                                st.subheader("📊 Training Results per Ticker")
+                                ticker_summary = data["training_summary_per_ticker"]
+                                
+                                for ticker, summary in ticker_summary.items():
+                                    with st.expander(f"📈 {ticker} Results", expanded=True):
+                                        status = summary.get("status", "unknown")
+                                        message = summary.get("message", "No message")
+                                        
+                                        if status == "success":
+                                            st.success(f"✅ {message}")
+                                        else:
+                                            st.error(f"❌ {message}")
+                                        
+                                        # Show training metrics if available
+                                        if "final_train_loss" in summary:
+                                            col1, col2, col3 = st.columns(3)
+                                            with col1:
+                                                st.metric("Final Train Loss", f"{summary['final_train_loss']:.4f}")
+                                            with col2:
+                                                st.metric("Final Test Loss", f"{summary['final_test_loss']:.4f}")
+                                            with col3:
+                                                st.metric("Training Time", f"{summary.get('train_time_seconds', 0):.1f}s")
+                                        
+                                        # Show dataset info if available
+                                        if "dataset_size_total" in summary:
+                                            st.write(f"**Dataset:** {summary['dataset_size_total']} total samples "
+                                                   f"({summary.get('training_set_size', 0)} train, {summary.get('test_set_size', 0)} test)")
+                        
+                        # Show a button to refresh the model list
+                        if st.button("🔄 Refresh Model List", key="refresh_after_training"):
+                            st.rerun()
                     else:
                         try:
                             error_data = response.json()
@@ -480,7 +568,7 @@ elif page == "Model Training":
                         st.text(response.text)
 
                 except requests.exceptions.Timeout:
-                    st.error(f"Request timed out after 600 seconds when trying to reach {train_url}. The training job might still be running on the server if it started.")
+                    st.error(f"Request timed out after 60 seconds when trying to reach {train_url}. The training job might still be running on the server if it started.")
                 except requests.exceptions.RequestException as e:
                     st.error(f"Error connecting to API Gateway at {train_url}: {e}")
                 except Exception as e:
@@ -696,26 +784,111 @@ elif page == "Portfolio Optimization":
                         response_data = response.json()
                         st.success(response_data.get("message", "Portfolio optimized successfully."))
                         
+                        # Debug logging for response data
+                        st.write("DEBUG - Response Data Structure:")
+                        st.write(response_data)
+                        
                         if response.status_code == 200 and "data" in response_data:
                             data = response_data["data"]
+                            
+                            # Debug logging for weights data
+                            st.write("DEBUG - Optimized Weights Data:")
+                            st.write(data.get("optimized_weights", "No weights data found"))
                             
                             # Display optimized weights
                             if "optimized_weights" in data:
                                 st.subheader("Optimized Portfolio Weights")
                                 weights = data["optimized_weights"]
                                 
-                                # Create a pie chart of the weights
-                                fig = px.pie(
-                                    values=list(weights.values()), 
-                                    names=list(weights.keys()),
-                                    title="Portfolio Allocation"
-                                )
-                                st.plotly_chart(fig)
+                                # Debug the weights data type and content
+                                st.write(f"DEBUG - Weights type: {type(weights)}")
+                                st.write(f"DEBUG - Weights content: {weights}")
+                                st.write(f"DEBUG - Weights values: {list(weights.values())}")
+                                st.write(f"DEBUG - Weights keys: {list(weights.keys())}")
                                 
-                                # Also display as a table
-                                weights_df = pd.DataFrame(list(weights.items()), columns=["Ticker", "Weight"])
-                                weights_df["Weight"] = weights_df["Weight"].apply(lambda x: f"{x:.2%}")
-                                st.table(weights_df)
+                                # Create a pie chart of the weights
+                                try:
+                                    # Create a DataFrame for the pie chart with clean values
+                                    pie_data = pd.DataFrame({
+                                        'Ticker': list(weights.keys()),
+                                        'Weight': [float(w) for w in list(weights.values())]
+                                    })
+                                    
+                                    # Format the data - ensure we have non-zero values for display
+                                    # Set a minimum threshold for display (e.g., 0.001%)
+                                    MIN_DISPLAY_THRESHOLD = 0.00001
+                                    pie_data['Weight_for_display'] = pie_data['Weight'].apply(
+                                        lambda x: max(x, MIN_DISPLAY_THRESHOLD) if x > 0 else MIN_DISPLAY_THRESHOLD
+                                    )
+                                    
+                                    # Create a direct Plotly figure - most reliable approach
+                                    fig = go.Figure()
+                                    
+                                    # Add the pie trace with explicit configuration
+                                    fig.add_trace(go.Pie(
+                                        labels=pie_data['Ticker'],
+                                        values=pie_data['Weight_for_display'],
+                                        textinfo='label+percent',
+                                        hoverinfo='label+percent+value',
+                                        textposition='inside',
+                                        insidetextorientation='radial',
+                                        marker=dict(
+                                            colors=['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3']
+                                        ),
+                                        pull=[0.1 if ticker == 'AAPL' else 0 for ticker in pie_data['Ticker']]
+                                    ))
+                                    
+                                    # Update layout with explicit styling
+                                    fig.update_layout(
+                                        title={
+                                            'text': 'Portfolio Allocation',
+                                            'y': 0.95,
+                                            'x': 0.5,
+                                            'xanchor': 'center',
+                                            'yanchor': 'top',
+                                            'font': {'size': 20}
+                                        },
+                                        legend={
+                                            'orientation': 'h',
+                                            'yanchor': 'bottom',
+                                            'y': -0.2,
+                                            'xanchor': 'center',
+                                            'x': 0.5
+                                        },
+                                        width=600,
+                                        height=500,
+                                        margin=dict(l=40, r=40, t=80, b=40)
+                                    )
+                                    
+                                    # Use columns to center the chart
+                                    col1, col2, col3 = st.columns([1, 2, 1])
+                                    with col2:
+                                        # Render the chart - force use_container_width=False for more reliable rendering
+                                        st.plotly_chart(fig, use_container_width=True)
+                                    
+                                    # Also display as a table
+                                    weights_df = pd.DataFrame(list(weights.items()), columns=["Ticker", "Weight"])
+                                    weights_df["Weight"] = weights_df["Weight"].apply(lambda x: f"{x:.2%}")
+                                    st.table(weights_df)
+                                    
+                                except Exception as chart_error:
+                                    st.error(f"Error creating portfolio visualization: {chart_error}")
+                                    
+                                    # Show a bar chart as fallback
+                                    st.subheader("Portfolio Allocation (Bar Chart)")
+                                    weights_df = pd.DataFrame(list(weights.items()), columns=["Ticker", "Weight"])
+                                    weights_df = weights_df.sort_values("Weight", ascending=False)
+                                    
+                                    # Use st.bar_chart for simplicity
+                                    st.bar_chart(
+                                        weights_df.set_index("Ticker")["Weight"],
+                                        use_container_width=True,
+                                        height=400
+                                    )
+                                    
+                                    # Always show the table
+                                    weights_df["Weight"] = weights_df["Weight"].apply(lambda x: f"{x:.2%}")
+                                    st.table(weights_df)
                             
                             # Display metrics
                             if "metrics" in data:

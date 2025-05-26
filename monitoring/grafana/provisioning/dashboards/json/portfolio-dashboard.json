@@ -243,7 +243,20 @@
       "dashes": false,
       "datasource": "Prometheus",
       "fieldConfig": {
-        "defaults": {},
+        "defaults": {
+          "unit": "decmbytes",
+          "custom": {
+            "axisLabel": "Memory Usage (MB)",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "fillOpacity": 10,
+            "pointSize": 5,
+            "lineWidth": 1,
+            "spanNulls": true,
+            "showPoints": "auto"
+          }
+        },
         "overrides": []
       },
       "fill": 1,
@@ -322,7 +335,7 @@
         "sort": 0,
         "value_type": "individual"
       },
-      "type": "graph",
+      "type": "timeseries",
       "xaxis": {
         "buckets": null,
         "mode": "time",
