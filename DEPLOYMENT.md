@@ -1,260 +1,282 @@
-# Deployment Guide for Portfolio Optimizer
+# Portfolio Optimizer v2.0.0 Deployment Guide
 
-This guide provides instructions for deploying the Portfolio Optimizer system in various environments.
+This guide provides step-by-step instructions for deploying the Portfolio Optimizer system.
 
-## Docker Compose Deployment
+## Prerequisites
 
-The simplest way to deploy the system is using Docker Compose, which is suitable for both development and production environments.
+### System Requirements
+- Docker Engine 20.10+
+- Docker Compose 2.0+
+- 4GB+ RAM available
+- 10GB+ disk space
+- Internet connection for data fetching
 
-### Prerequisites
+### API Keys Required
+- Financial Modeling Prep API key (free tier available)
+  - Sign up at: https://financialmodelingprep.com/developer/docs
+  - Free tier includes 250 requests/day
 
-- Docker and Docker Compose installed
-- Git
-- Financial data provider API key (e.g., Financial Modeling Prep)
+## Quick Start Deployment
 
-### Steps
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/username/portfolio-optimizer.git
-   cd portfolio-optimizer
-   ```
-
-2. Create a `.env` file with the following variables:
-   ```
-   FMP_API_KEY=your_api_key_here
-   DATABASE_URL=postgresql://postgres:postgres@db:5432/portfolio_optimizer
-   ```
-
-3. Start the services:
-   ```bash
-   docker-compose up -d
-   ```
-
-4. Verify all services are running:
-   ```bash
-   docker-compose ps
-   ```
-
-5. Access the services:
-   - Frontend: http://localhost:8501
-   - API Gateway Swagger UI: http://localhost:8000/api/docs
-   - Data Ingestion Service: http://localhost:5001/docs
-   - Model Training Service: http://localhost:5002/docs
-   - Portfolio Optimization Service: http://localhost:5003/docs
-
-## Production Deployment Considerations
-
-For production deployments, consider the following enhancements:
-
-### 1. Docker Compose for Production
-
-1. Create a production-specific Docker Compose file:
-   ```bash
-   touch docker-compose.prod.yml
-   ```
-
-2. Add production-specific configurations:
-   ```yaml
-   version: '3.8'
-   
-   services:
-     api_gateway_service:
-       restart: always
-       environment:
-         - LOG_LEVEL=INFO
-       deploy:
-         resources:
-           limits:
-             cpus: '0.5'
-             memory: 512M
-     
-     # Similar configurations for other services
-     
-     db:
-       volumes:
-         - postgres_data:/var/lib/postgresql/data
-       restart: always
-       deploy:
-         resources:
-           limits:
-             cpus: '1.0'
-             memory: 1G
-   
-   volumes:
-     postgres_data:
-       driver: local
-   ```
-
-3. Deploy with the production configuration:
-   ```bash
-   docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
-   ```
-
-### 2. Database Considerations
-
-For production databases:
-
-1. Use a managed database service (AWS RDS, GCP Cloud SQL, etc.)
-2. Configure proper backup schedules
-3. Set up read replicas for high read workloads
-4. Implement connection pooling
-
-### 3. Security Enhancements
-
-1. Set up HTTPS with proper certificates
-2. Restrict API access with API keys
-3. Configure network policies to restrict service-to-service communication
-4. Use Docker secrets for sensitive information
-
-### 4. Monitoring and Logging
-
-1. Set up a centralized logging system (ELK stack, Loki, etc.)
-2. Implement distributed tracing (Jaeger, Zipkin)
-3. Configure monitoring with Prometheus and Grafana
-4. Set up alerting for critical service metrics
-
-#### Prometheus and Grafana Setup
-
-The system includes a pre-configured monitoring stack with Prometheus and Grafana:
-
-1. **Prometheus Configuration**:
-   - Located at `monitoring/prometheus/prometheus.yml`
-   - Configured to scrape metrics from all services
-   - Default scrape interval: 15s
-
-Example Prometheus configuration:
-```yaml
-global:
-  scrape_interval: 15s
-
-scrape_configs:
-  - job_name: 'api_gateway'
-    static_configs:
-      - targets: ['api_gateway_service:5000']
-    metrics_path: '/metrics'
-  
-  - job_name: 'data_ingestion'
-    static_configs:
-      - targets: ['data_ingestion_service:5001']
-    metrics_path: '/metrics'
-
-  - job_name: 'model_training'
-    static_configs:
-      - targets: ['model_training_service:8000']
-    metrics_path: '/metrics'
-    
-  - job_name: 'portfolio_optimization'
-    static_configs:
-      - targets: ['portfolio_optimization_service:8001']
-    metrics_path: '/metrics'
-
-  - job_name: 'prometheus'
-    static_configs:
-      - targets: ['localhost:9090']
-    
-  - job_name: 'node_exporter'
-    static_configs:
-      - targets: ['node_exporter:9100']
+### 1. Clone Repository
+```bash
+git clone https://github.com/StephanKalika/portfolio-optimizer.git
+cd portfolio-optimizer
 ```
 
-2. **Grafana Dashboard**:
-   - Pre-configured dashboard available at `monitoring/grafana/provisioning/dashboards/json/portfolio-dashboard.json`
-   - Dashboard URL: http://localhost:3000/d/portfolio-dashboard-new/portfolio-optimizer-dashboard
-   - Default credentials: admin/admin
+### 2. Environment Configuration
+```bash
+# Copy example environment file
+cp .env.example .env
 
-3. **Dashboard Features**:
-   - Service Availability panel showing up/down status
-   - CPU and Memory usage metrics
+# Edit .env file with your API key
+nano .env  # or use your preferred editor
+```
+
+**Required Configuration:**
+```env
+FMP_API_KEY=your_actual_api_key_here
+```
+
+### 3. Deploy Services
+```bash
+# Start all services
+docker compose up -d
+
+# Verify deployment
+docker compose ps
+```
+
+### 4. Access Applications
+- **Frontend**: http://localhost:8501
+- **API Gateway**: http://localhost:5000/docs
+- **Monitoring (Grafana)**: http://localhost:3000 (admin/admin)
+- **RabbitMQ Management**: http://localhost:15672 (guest/guest)
+
+## Service Architecture
+
+### Core Services
+| Service | Port | Purpose |
+|---------|------|---------|
+| Frontend | 8501 | Streamlit web interface |
+| API Gateway | 5000 | Request routing and circuit breaking |
+| Data Ingestion | 5001 | Stock data fetching |
+| Model Training | 5002 | ML model training |
+| Portfolio Optimization | 5003 | Portfolio weight optimization |
+| Model Training Worker | - | Async training processing |
+
+### Infrastructure Services
+| Service | Port | Purpose |
+|---------|------|---------|
+| PostgreSQL | 5432 | Data storage |
+| RabbitMQ | 5672/15672 | Message queue |
+| Prometheus | 9090 | Metrics collection |
+| Grafana | 3000 | Monitoring dashboard |
+
+## Health Checks
+
+### System Status
+```bash
+# Check all services
+curl http://localhost:5000/api/v1/system-status
+
+# Individual service health
+curl http://localhost:5000/health
+curl http://localhost:5001/health
+curl http://localhost:5002/health
+curl http://localhost:5003/health
+```
+
+### Service Logs
+```bash
+# View all logs
+docker compose logs
+
+# Specific service logs
+docker compose logs frontend_service
+docker compose logs model_training_service
+docker compose logs portfolio_optimization_service
+```
+
+## Usage Workflow
+
+### 1. Data Ingestion
+1. Navigate to "Data Ingestion" in the frontend
+2. Enter stock tickers (e.g., AAPL,MSFT,GOOGL)
+3. Select date range (recommend 3+ years)
+4. Click "Fetch Data"
+
+### 2. Model Training
+1. Navigate to "Model Training"
+2. Select tickers to train
+3. Configure model parameters:
+   - Model type: LSTM (recommended)
+   - Epochs: 50 (default)
+   - Sequence length: 60 (default)
+4. Choose training method:
+   - **Direct**: Immediate training with progress display
+   - **Async**: Background training via worker service
+5. Monitor training progress and results
+
+### 3. Portfolio Optimization
+1. Navigate to "Portfolio Optimization"
+2. Select trained model from dropdown
+3. Choose tickers for portfolio
+4. Set optimization parameters:
+   - Risk-free rate: 0.02 (2%)
+   - Date range for covariance calculation
+5. Click "Optimize Portfolio"
+6. View optimized weights and metrics
+
+## Troubleshooting
+
+### Common Issues
+
+#### Services Not Starting
+```bash
+# Check Docker status
+docker compose ps
+
+# Restart specific service
+docker compose restart service_name
+
+# Full system restart
+docker compose down && docker compose up -d
+```
+
+#### Database Connection Issues
+```bash
+# Check database logs
+docker compose logs db
+
+# Reset database
+docker compose down -v
+docker compose up -d
+```
+
+#### Training Progress Issues
+- **Fixed in v2.0**: Progress now persists until manually cleared
+- Use manual refresh buttons instead of waiting for auto-refresh
+- Check worker service logs if using async training
+
+#### Portfolio Optimization Errors
+- **Fixed in v2.0**: Database query parameter issues resolved
+- Ensure model is fully trained before optimization
+- Verify tickers exist in selected model
+
+### Performance Optimization
+
+#### Memory Usage
+```bash
+# Monitor resource usage
+docker stats
+
+# Adjust service resources in docker-compose.yml if needed
+```
+
+#### Training Performance
+- Use async training for multiple models
+- Monitor worker service capacity
+- Consider reducing epochs for faster training
+
+## Monitoring and Maintenance
+
+### Grafana Dashboard
+1. Access: http://localhost:3000
+2. Login: admin/admin
+3. Navigate to Portfolio Optimizer Dashboard
+4. Monitor:
+   - Service availability
+   - CPU and memory usage
    - Request rates and response times
-   - Service status with detailed endpoint metrics
 
-4. **Accessing Monitoring**:
-   - Prometheus UI: http://localhost:9090
-   - Grafana UI: http://localhost:3000
+### RabbitMQ Management
+1. Access: http://localhost:15672
+2. Login: guest/guest
+3. Monitor:
+   - Queue status
+   - Message rates
+   - Worker connections
 
-5. **Adding Custom Metrics**:
-   - Each service exposes metrics via the `/metrics` endpoint
-   - Custom metrics can be added using the Prometheus client library
-   - Update the Grafana dashboard to visualize new metrics
+### Log Management
+```bash
+# Rotate logs
+docker compose logs --tail=100 service_name
 
-For more details, see the [MONITORING.md](MONITORING.md) documentation.
+# Clear old containers
+docker system prune
+```
 
-### 5. CI/CD Pipeline
+## Backup and Recovery
 
-1. Set up a CI/CD pipeline using GitHub Actions, GitLab CI, or Jenkins
-2. Automate testing, building, and deployment
-3. Implement blue-green deployments for zero-downtime updates
+### Data Backup
+```bash
+# Backup database
+docker compose exec db pg_dump -U stockuser stockdata > backup.sql
 
-Example GitHub Actions workflow:
-```yaml
-name: Build and Deploy
+# Backup trained models
+docker compose exec model_training_service tar -czf models_backup.tar.gz /app/trained_models
+```
 
-on:
-  push:
-    branches: [ main ]
+### Recovery
+```bash
+# Restore database
+docker compose exec -T db psql -U stockuser stockdata < backup.sql
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    
-    - name: Build and push API Gateway
-      uses: docker/build-push-action@v2
-      with:
-        context: ./api_gateway_service
-        push: true
-        tags: your-registry/portfolio-optimizer-api-gateway:latest
-    
-    # Repeat for other services
-  
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v2
-    
-    - name: Deploy to server
-      uses: appleboy/ssh-action@master
-      with:
-        host: ${{ secrets.HOST }}
-        username: ${{ secrets.USERNAME }}
-        key: ${{ secrets.KEY }}
-        script: |
-          cd /path/to/deployment
-          docker-compose pull
-          docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# Restore models
+docker compose exec model_training_service tar -xzf models_backup.tar.gz -C /app/
+```
+
+## Security Considerations
+
+### Production Deployment
+1. **Change default passwords**:
+   - Database credentials
+   - RabbitMQ credentials
+   - Grafana admin password
+
+2. **Network Security**:
+   - Use reverse proxy (nginx/traefik)
+   - Enable HTTPS/TLS
+   - Restrict port access
+
+3. **API Security**:
+   - Implement authentication
+   - Rate limiting
+   - Input validation
+
+### Environment Variables
+```env
+# Production example
+POSTGRES_PASSWORD=secure_random_password
+RABBITMQ_DEFAULT_PASS=secure_random_password
+GRAFANA_ADMIN_PASSWORD=secure_random_password
 ```
 
 ## Scaling Considerations
 
-1. Use message queues (RabbitMQ, Kafka) for asynchronous processing
-2. Implement horizontal scaling for stateless services using Docker Compose scale command:
-   ```bash
-   docker-compose up -d --scale model_training_service=3
-   ```
-3. Use Redis or other in-memory caches for frequently accessed data
-4. Consider sharding for database scaling
+### Horizontal Scaling
+- Multiple worker instances for training
+- Load balancer for API Gateway
+- Database read replicas
 
-## Backup and Disaster Recovery
+### Vertical Scaling
+- Increase container memory limits
+- Add CPU cores for training services
+- SSD storage for database
 
-1. Schedule regular database backups
-2. Document and test recovery procedures
-3. Implement automated backup scripts:
-   ```bash
-   #!/bin/bash
-   # Backup script for PostgreSQL database
-   
-   DATE=$(date +%Y-%m-%d_%H-%M-%S)
-   BACKUP_DIR="/backups"
-   
-   docker-compose exec -T db pg_dump -U postgres portfolio_optimizer > $BACKUP_DIR/backup_$DATE.sql
-   ```
+## Support
 
-## Performance Optimization
+### Documentation
+- API Documentation: Available at service `/docs` endpoints
+- Monitoring: Grafana dashboards with detailed metrics
+- Logs: Comprehensive logging across all services
 
-1. Profile and optimize each service
-2. Optimize database queries with proper indexing
-3. Implement caching where appropriate
-4. Use connection pooling for database connections 
+### Community
+- GitHub Issues: Report bugs and feature requests
+- Discussions: Architecture and usage questions
+
+## Version Information
+- **Current Version**: 2.0.0
+- **Release Date**: 2025-05-26
+- **Compatibility**: Docker Compose 2.0+, Docker Engine 20.10+ 
